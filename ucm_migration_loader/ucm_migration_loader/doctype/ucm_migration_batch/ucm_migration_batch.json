@@ -1,0 +1,86 @@
+{
+ "doctype": "DocType",
+ "name": "UCM Migration Batch",
+ "module": "UCM Migration Loader",
+ "autoname": "hash",
+ "sort_field": "sequence_number",
+ "sort_order": "ASC",
+ "engine": "InnoDB",
+ "field_order": [
+  "display_id",
+  "migration_run",
+  "sequence_number",
+  "digest",
+  "payload",
+  "target_digest",
+  "write_route",
+  "parent_doctype"
+ ],
+ "fields": [
+  {
+   "fieldname": "display_id",
+   "label": "Batch ID",
+   "fieldtype": "Data",
+   "read_only": 1,
+   "unique": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "migration_run",
+   "label": "Migration Run",
+   "fieldtype": "Link",
+   "read_only": 1,
+   "options": "UCM Migration Run",
+   "search_index": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "sequence_number",
+   "label": "Sequence Number",
+   "fieldtype": "Int",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "digest",
+   "label": "Digest",
+   "fieldtype": "Data",
+   "read_only": 1
+  },
+  {
+   "fieldname": "payload",
+   "label": "Payload",
+   "fieldtype": "Long Text",
+   "read_only": 1
+  },
+  {
+   "fieldname": "target_digest",
+   "label": "Applied Row Digest",
+   "fieldtype": "Data",
+   "read_only": 1
+  },
+  {
+   "fieldname": "write_route",
+   "label": "Write route",
+   "fieldtype": "Data",
+   "read_only": 1
+  },
+  {
+   "fieldname": "parent_doctype",
+   "label": "Published DocType",
+   "fieldtype": "Data",
+   "read_only": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1
+  }
+ ],
+ "creation": "2026-11-18 00:00:00",
+ "modified": "2026-11-20 23:45:00",
+ "title_field": "display_id",
+ "show_title_field_in_link": 1,
+ "search_fields": "display_id"
+}

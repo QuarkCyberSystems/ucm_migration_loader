@@ -1,0 +1,32 @@
+diff --git a/frappe/model/delete_doc.py b/frappe/model/delete_doc.py
+index 743caece05..7c5032a4a3 100644
+--- a/frappe/model/delete_doc.py
++++ b/frappe/model/delete_doc.py
+@@ -32,6 +32,8 @@ def delete_doc(
+ 	ignore_on_trash: bool = False,
+ 	ignore_missing: bool = True,
+ 	delete_permanently: bool = False,
++	*,
++	delete_dynamic_links_now: bool = False,
+ ) -> bool | None:
+ 	"""
+ 	Deletes a document and validates if it is not submitted and not linked in a live record.
+@@ -65,6 +67,9 @@ def delete_doc(
+ 			without adding it to the "Deleted Document" table for recovery purposes.
+ 			When False, the document is soft-deleted and can be recovered. Defaults to False.
+ 
++		delete_dynamic_links_now (bool, optional): Remove dynamic references in the same transaction
++			when the caller needs to reuse the document identity immediately after commit.
++
+ 	Raises:
+ 		frappe.DoesNotExistError: When document doesn't exist and ignore_missing=False.
+ 		frappe.LinkExistsError: When document is linked to other records and force=False.
+@@ -205,7 +210,7 @@ def delete_doc(
+ 					"frappe.model.delete_doc.delete_dynamic_links",
+ 					doctype=doc.doctype,
+ 					name=doc.name,
+-					now=frappe.in_test,
++					now=frappe.in_test or delete_dynamic_links_now,
+ 					enqueue_after_commit=True,
+ 				)
+ 

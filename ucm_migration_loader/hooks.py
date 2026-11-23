@@ -1,0 +1,12 @@
+app_name = "ucm_migration_loader"
+app_title = "UCM Migration Loader"
+app_publisher = "Quark Cyber Systems"
+app_description = "Rehearse and import versioned publishing snapshots into UCM"
+app_email = "vivek@quarkcs.com"
+app_license = "GPL-3.0"
+required_apps = ["ucm"]
+
+doc_events = {
+    "Context": {"validate": "ucm_migration_loader.application.guard_context"},
+    "Record Share": {"validate": "ucm_migration_loader.application.guard_share"},
+}

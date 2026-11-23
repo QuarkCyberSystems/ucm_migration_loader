@@ -1,0 +1,136 @@
+{
+ "doctype": "DocType",
+ "name": "UCM Migration Run",
+ "module": "UCM Migration Loader",
+ "autoname": "hash",
+ "engine": "InnoDB",
+ "field_order": [
+  "display_id",
+  "context_id",
+  "snapshot_id",
+  "publishing_user",
+  "manifest_json",
+  "state",
+  "received",
+  "document_count",
+  "finding",
+  "applied",
+  "dispatch_id",
+  "reconciliation_json",
+  "approved_by",
+  "activated_on",
+  "write_plan_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "display_id",
+   "label": "Run ID",
+   "fieldtype": "Data",
+   "read_only": 1,
+   "unique": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "context_id",
+   "label": "Context Id",
+   "fieldtype": "Data",
+   "read_only": 1,
+   "search_index": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "snapshot_id",
+   "label": "Snapshot Id",
+   "fieldtype": "Data",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "publishing_user",
+   "label": "Publishing User",
+   "fieldtype": "Link",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "manifest_json",
+   "label": "Manifest Json",
+   "fieldtype": "Long Text",
+   "read_only": 1
+  },
+  {
+   "fieldname": "state",
+   "label": "State",
+   "fieldtype": "Select",
+   "read_only": 1,
+   "options": "Receiving\nPublication staged\nPublication applying\nPublication cleaning\nPublication paused\nPublication ready\nStaged\nVerified\nApplying\nPaused\nReady\nCleaning\nRejected\nActivated\nDiscarded",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "received",
+   "label": "Received",
+   "fieldtype": "Int",
+   "read_only": 1
+  },
+  {
+   "fieldname": "document_count",
+   "label": "Document Count",
+   "fieldtype": "Int",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finding",
+   "label": "Finding",
+   "fieldtype": "Small Text",
+   "read_only": 1
+  },
+  {
+   "fieldname": "applied",
+   "label": "Applied Batches",
+   "fieldtype": "Int",
+   "read_only": 1
+  },
+  {
+   "fieldname": "dispatch_id",
+   "label": "Dispatch ID",
+   "fieldtype": "Int",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reconciliation_json",
+   "label": "Reconciliation Report",
+   "fieldtype": "Long Text",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approved_by",
+   "label": "Activated By",
+   "fieldtype": "Link",
+   "read_only": 1,
+   "options": "User"
+  },
+  {
+   "fieldname": "activated_on",
+   "label": "Activated On",
+   "fieldtype": "Datetime",
+   "read_only": 1
+  },
+  {
+   "fieldname": "write_plan_json",
+   "label": "Write routes by DocType",
+   "fieldtype": "Long Text",
+   "read_only": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1
+  }
+ ],
+ "creation": "2026-11-18 00:00:00",
+ "modified": "2026-11-20 23:45:00",
+ "title_field": "display_id",
+ "show_title_field_in_link": 1,
+ "search_fields": "display_id"
+}
