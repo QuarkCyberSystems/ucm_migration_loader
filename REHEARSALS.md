@@ -300,3 +300,24 @@ On a disposable site, stage a fresh generated context containing 60 Persons and 
 ```sh
 ../env/bin/python ../apps/ucm_migration_loader/tests/checkpoint_recovery.py --site REHEARSAL_SITE --run RUN_DIGEST
 ```
+
+### Set-based SQL route
+
+`ucm_migration_loader.ucm_migration_loader.set_based` loads a staged publication without saving each record through its controller. It is run from the receiving bench and is not yet offered in Desk or on the queue. It uses the same staged file, run record, batch receipts and hidden context as the document route. Sensitivity tags, assignments and shares still go through the documents.
+
+```sh
+bench --site "$TARGET_SITE" execute ucm_migration_loader.ucm_migration_loader.set_based.apply --kwargs "{\"run\":\"$RUN_ID\"}"
+bench --site "$TARGET_SITE" execute ucm_migration_loader.ucm_migration_loader.set_based.derive --kwargs "{\"run\":\"$RUN_ID\"}"
+bench --site "$TARGET_SITE" execute ucm_migration_loader.ucm_migration_loader.set_based.verify --kwargs "{\"run\":\"$RUN_ID\"}"
+bench --site "$TARGET_SITE" execute ucm_migration_loader.ucm_migration_loader.set_based.activate --kwargs "{\"run\":\"$RUN_ID\"}"
+```
+
+- `apply` writes the published rows with multi-row inserts. Each group of batches of one DocType, up to 5,000 parent records, commits with its receipts and the run's cursor. Run it again to resume.
+- `derive` applies the values a save would derive, for this delegation only: an activity's place type, country and areas from its Place, the department and country copies on history rows and notes, the share facts and the latest-state marks. It returns the rows each rule changed.
+- `verify` compares every stored column with the publication, counts the rows that break the rules a query can check (required fields, options, links, option sets and collections, links that leave the context, places, history locks), and passes one record in fifty through the document route's own check. With no finding the run becomes **Publication ready**. The report is kept on the run.
+- `activate` releases the held assignments and shares through the documents and opens the context in one transaction. It reads the counts and receipts again and does not re-read every record.
+- `discard` removes a hidden run's rows by primary key, 5,000 at a time, and needs no change to Frappe.
+
+No controller runs for a copied row. A rule of a controller that is not in `verify`'s list is checked only on the sampled records. A picture keeps its published file name; the document route may store the same bytes under another name.
+
+`tests/set_based_comparison.py` compares a load by this route with the same delegation loaded through the documents: a row-by-row and field-by-field diff of every table of the publication, and the row count of every table of the site before and after. `tests/test_set_based.py` covers the parts that need no site.
