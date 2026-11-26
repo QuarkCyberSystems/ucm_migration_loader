@@ -7,11 +7,13 @@ import frappe
 from frappe.core.doctype.file.utils import relink_mismatched_files
 from frappe.desk.form.document_follow import _follow_document
 
+from .batch_metrics import measure
 from .frozen import ORDER, OWNERS
 
 NOTE_TYPES = frozenset(("Person Note", "Activity Note", "Activity Detail Note"))
 
 
+@measure("validation")
 def prepare_insert(doc, name, *, set_child_names=False):
     # The before-write lifecycle of Document.insert from this bench's Frappe release.
     doc.flags.notifications_executed = []

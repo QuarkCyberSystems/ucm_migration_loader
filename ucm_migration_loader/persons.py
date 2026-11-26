@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pymysql
 
+from .batch_metrics import measure
 from .dictionary_identity import TERM_COLUMNS, resolve_term
 from .stored_rows import business, checked_row, insert_document
 
@@ -85,6 +86,7 @@ def attach_picture(person, source_file, private_root):
     return attach_picture_bytes(person, source_file, content)
 
 
+@measure("attachments")
 def attach_picture_bytes(
     person, source_file, content, *, folder=None, insert=insert_document
 ):

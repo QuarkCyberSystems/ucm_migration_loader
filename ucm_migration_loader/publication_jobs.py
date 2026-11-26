@@ -3,6 +3,7 @@
 import json
 
 import frappe
+from frappe.utils import now_datetime
 
 from . import api
 from .application import check_closed, lock_run
@@ -131,11 +132,13 @@ def execute(run, action, ticket, max_batches, stop_at=None):
             if location := getattr(exc, "migration_location", None):
                 sequence, position, dt = location
                 where = f"batch {sequence}, item {position} ({dt})"
-            frappe.db.set_value(
-                api.RUN,
-                run,
-                "finding",
-                f"{action} {where}: {type(exc).__name__}",
-            )
+            update = {
+                "finding": f"{action} {where}: {type(exc).__name__}",
+                "worker_phase": f"{action} failed",
+                "worker_seen": now_datetime(),
+            }
+            if action == "apply" and record.state == APPLYING:
+                update["state"] = PAUSED
+            frappe.db.set_value(api.RUN, run, update)
             frappe.db.commit()
         raise

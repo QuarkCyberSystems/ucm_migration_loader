@@ -13,7 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 
-BENCH = Path(__file__).resolve().parents[3]
+from rehearsal_bench import BENCH
+
 TESTS = Path(__file__).resolve().parent
 
 

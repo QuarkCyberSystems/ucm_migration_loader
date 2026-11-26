@@ -89,7 +89,12 @@ function show_batch_progress(frm) {
 	} else if (["Cleaning", "Publication cleaning", "Discarded"].includes(frm.doc.state)) {
 		message = __("{0} of {1} batches currently applied", counts);
 	}
-	frm.dashboard.show_progress(__("Batch progress"), Math.floor(100 * applied / total), message);
+	if (frm.doc.worker_phase && frm.doc.worker_seen) {
+        message += " · " + __("{0} · {1} batches reconciled · Last checkpoint {2}", [
+            __(frm.doc.worker_phase), Number(frm.doc.reconcile_cursor || 0), frm.doc.worker_seen
+        ]);
+    }
+    frm.dashboard.show_progress(__("Batch progress"), Math.floor(100 * applied / total), message);
 }
 
 async function configure_write_routes(frm) {

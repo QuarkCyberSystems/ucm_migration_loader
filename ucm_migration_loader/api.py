@@ -71,6 +71,11 @@ def _result(record):
         "applied": record.applied or 0,
         "documents": record.document_count,
         "finding": record.finding,
+        "reconciled_batches": record.get("reconcile_cursor") or 0,
+        "worker_phase": record.get("worker_phase"),
+        "last_checkpoint": str(record.worker_seen)
+        if record.get("worker_seen")
+        else None,
     }
 
 

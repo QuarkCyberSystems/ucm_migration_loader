@@ -4,11 +4,12 @@ import argparse
 import json
 import os
 import subprocess
-from pathlib import Path
 from uuid import uuid4
 
 import frappe
 import pymysql
+from rehearsal_bench import BENCH
+
 from ucm_migration_loader import api
 from ucm_migration_loader.contract import digest, plan
 from ucm_migration_loader.push import publication, send
@@ -160,7 +161,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--site", required=True)
     args = parser.parse_args()
-    os.chdir(Path(__file__).resolve().parents[3] / "sites")
+    os.chdir(BENCH / "sites")
     frappe.init(site=args.site)
     frappe.connect()
     from ucm.tests.utils import make_user

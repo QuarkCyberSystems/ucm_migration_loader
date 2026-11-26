@@ -14,7 +14,16 @@
   "payload",
   "target_digest",
   "write_route",
-  "parent_doctype"
+  "parent_doctype",
+  "parent_rows",
+  "payload_bytes",
+  "attachment_bytes",
+  "verify_seconds",
+  "write_seconds",
+  "reconcile_seconds",
+  "release_fingerprint",
+  "validation_seconds",
+  "attachment_seconds"
  ],
  "fields": [
   {
@@ -70,6 +79,66 @@
    "label": "Published DocType",
    "fieldtype": "Data",
    "read_only": 1
+  },
+  {
+   "fieldname": "parent_rows",
+   "label": "Parent rows",
+   "fieldtype": "Int",
+   "read_only": 1
+  },
+  {
+   "fieldname": "payload_bytes",
+   "label": "Batch payload bytes",
+   "fieldtype": "Int",
+   "read_only": 1
+  },
+  {
+   "fieldname": "attachment_bytes",
+   "label": "Private attachment bytes",
+   "fieldtype": "Int",
+   "read_only": 1
+  },
+  {
+   "fieldname": "verify_seconds",
+   "label": "Batch integrity check (seconds)",
+   "fieldtype": "Float",
+   "read_only": 1,
+   "precision": "6"
+  },
+  {
+   "fieldname": "write_seconds",
+   "label": "Validated write including hooks and attachments (seconds)",
+   "fieldtype": "Float",
+   "read_only": 1,
+   "precision": "6"
+  },
+  {
+   "fieldname": "reconcile_seconds",
+   "label": "Row reconciliation (seconds)",
+   "fieldtype": "Float",
+   "read_only": 1,
+   "precision": "6"
+  },
+  {
+   "fieldname": "release_fingerprint",
+   "fieldtype": "Data",
+   "label": "Reconciled row fingerprint",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "validation_seconds",
+   "fieldtype": "Float",
+   "label": "Measured validation within write (seconds)",
+   "precision": "6",
+   "read_only": 1
+  },
+  {
+   "fieldname": "attachment_seconds",
+   "fieldtype": "Float",
+   "label": "Private file handling within write (seconds)",
+   "precision": "6",
+   "read_only": 1
   }
  ],
  "permissions": [
@@ -79,7 +148,7 @@
   }
  ],
  "creation": "2026-11-18 00:00:00",
- "modified": "2026-11-20 23:45:00",
+ "modified": "2026-11-26 00:00:00",
  "title_field": "display_id",
  "show_title_field_in_link": 1,
  "search_fields": "display_id"

@@ -1,17 +1,26 @@
 """Commit sealed generator casework in restartable transactions on a rehearsal target."""
 
+import hashlib
 import json
-import sqlite3
 from collections import Counter
-from contextlib import closing
 from decimal import Decimal
+from time import monotonic
 
 import frappe
-from frappe.utils import get_datetime, getdate
+from frappe.utils import get_datetime, getdate, now_datetime
 
-from . import api, held_shares, sql_writer, write_routes
+from . import (
+    api,
+    held_shares,
+    migration_load,
+    publication_index,
+    release_checkpoint,
+    sql_writer,
+    write_routes,
+)
 from .activities import insert_activity
 from .application import check_closed, lock_run
+from .batch_metrics import collect, measure
 from .dictionary_identity import resolve_term
 from .frozen import (
     CHILDREN,
@@ -20,12 +29,11 @@ from .frozen import (
     OWNERS,
     PLACE_ADDRESS_FIELDS,
     sensitive_policy,
-    verify_connection,
 )
 from .history import insert_history
 from .persons import attach_picture_bytes, insert_prepared_person
 from .publication_receiver import (
-    local_publication,
+    indexed_publication,
     release_differences,
     schema_differences,
 )
@@ -176,6 +184,7 @@ def insert_tag(row, context, insert=insert_document):
     refresh_tags(dt, key)
 
 
+@measure("validation")
 def prepare_item_rows(db, cache, context, item):
     dt = item["doctype"]
     if dt not in ORDER or dt in ("ToDo", "Record Share"):
@@ -219,6 +228,8 @@ def picture_attacher(db, cache, file_sha, insert):
         (content,) = db.execute(
             "select bytes from blobs where sha=?", (file_sha,)
         ).fetchone()
+        if hashlib.sha256(content).hexdigest() != file_sha:
+            raise ValueError("Private picture bytes differ from approved batch")
         # Use File.set_folder_name's target lookup once in this transaction.
         if "attachments_folder" not in cache:
             cache["attachments_folder"] = frappe.db.get_value(
@@ -317,18 +328,16 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None):
     api._operator()
     if int(max_batches) < 1:
         raise ValueError("Select a positive batch limit")
-    uri = local_publication(run).resolve(strict=True).as_uri() + "?mode=ro"
-    with closing(sqlite3.connect(uri, uri=True)) as db:
-        db.execute("pragma trusted_schema=OFF")
-        db.execute("begin")
-        manifest = verify_connection(db, run)
+    _, initial = lock_run(run)
+    with indexed_publication(run, initial) as (db, hashes, manifest, path, stamp):
         if release_differences(manifest):
             raise ValueError(
                 "Target application versions differ from the reviewed publication"
             )
         if schema_differences(manifest):
             raise ValueError("Target schema differs from publication")
-        for _ in range(int(max_batches)):
+        remaining = int(max_batches)
+        while remaining:
             try:
                 ctx, record = lock_run(run)
                 if ticket is not None and record.dispatch_id != ticket:
@@ -346,8 +355,25 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None):
                         **api._result(record),
                         "pending_activation_from_batch": (record.applied or 0) + 1,
                     }
-                if record.state not in ("Publication staged", "Publication applying"):
+                if record.state not in (
+                    "Publication staged",
+                    "Publication applying",
+                ):
                     raise ValueError("Run cannot apply a business batch")
+                if reason := migration_load.pressure():
+                    record.update(
+                        {
+                            "state": "Publication paused",
+                            "finding": reason,
+                            "worker_phase": "Paused for live load",
+                            "worker_seen": now_datetime(),
+                        }
+                    )
+                    record.save(ignore_permissions=True)
+                    frappe.db.commit()
+                    return api._result(record)
+                publication_index.check_identity(path, stamp)
+                started = monotonic()
                 check_closed(ctx, pilot=False)
                 if not record.applied:
                     from .publication_prerequisites import verify_links
@@ -355,13 +381,24 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None):
                     verify_sensitive_policy(manifest)
                     verify_links(db)
                 sequence = int(record.applied or 0) + 1
-                data = db.execute(
-                    "select sha,payload from batches where sequence=?", (sequence,)
-                ).fetchone()
+                data = publication_index.read_batch(
+                    db, hashes, sequence, manifest["batches"]
+                )
                 items = json.loads(data[1]) if data else []
                 if not items or items[0]["doctype"] in ("ToDo", "Record Share"):
-                    reconcile_business(db, ctx, record, manifest)
+                    complete = reconcile_business(
+                        db, ctx, record, manifest, checkpoint=True
+                    )
+                    publication_index.check_identity(path, stamp)
+                    if not complete:
+                        record.state = "Publication applying"
+                        record.save(ignore_permissions=True)
+                        frappe.db.commit()
+                        if ticket is not None:
+                            return api._result(record)
+                        continue
                     record.state = "Publication ready"
+                    record.worker_phase = "Ready for activation"
                     record.save(ignore_permissions=True)
                     frappe.db.commit()
                     return {
@@ -381,7 +418,11 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None):
                     if route == write_routes.SQL
                     else insert_batch
                 )
-                writer(db, ctx.name, items, sequence)
+                writing = monotonic()
+                with collect() as metrics:
+                    writer(db, ctx.name, items, sequence)
+                duration = monotonic() - writing
+                publication_index.check_identity(path, stamp)
                 frappe.get_doc(
                     {
                         "doctype": api.BATCH,
@@ -390,9 +431,28 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None):
                         "write_route": route,
                         "parent_doctype": dt,
                         "digest": sha,
+                        "parent_rows": len(items),
+                        "payload_bytes": len(data[1]),
+                        "attachment_bytes": sum(
+                            f["row"]["file_size"]
+                            for item in items
+                            for f in item.get("files", [])
+                        ),
+                        "verify_seconds": writing - started,
+                        "write_seconds": duration,
+                        "validation_seconds": metrics["validation"],
+                        "attachment_seconds": metrics["attachments"],
                     }
                 ).insert(set_name=f"{run}-{sequence}", ignore_permissions=True)
-                record.update({"state": "Publication applying", "applied": sequence})
+                remaining -= 1
+                record.update(
+                    {
+                        "state": "Publication applying",
+                        "applied": sequence,
+                        "worker_phase": "Writing " + dt,
+                        "worker_seen": now_datetime(),
+                    }
+                )
                 record.save(ignore_permissions=True)
                 frappe.db.commit()
             except Exception:
@@ -559,38 +619,63 @@ def verify_sensitive_policy(manifest):
         )
 
 
-def reconcile_business(db, ctx, record, manifest):
+def reconcile_business(db, ctx, record, manifest, *, checkpoint=False):
     from .frozen import selection
 
     verify_sensitive_policy(manifest)
-    refresh_published_tags(db, ctx.name)
+    cursor = int(record.reconcile_cursor or 0) if checkpoint else 0
+    if not cursor and manifest["counts"].get("Record Tag"):
+        refresh_published_tags(db, ctx.name)
     cache = {}
-    for dt in ORDER:
-        if dt == "Organization" and dt not in manifest["counts"]:
-            continue
-        where = selection(dt, organizations="Organization" in manifest["counts"])
-        count = frappe.db.sql(
-            f"select count(*) from `tab{dt}` r {where}", (ctx.name,) * where.count("%s")
-        )[0][0]
-        expected = 0 if dt in ("ToDo", "Record Share") else manifest["counts"][dt]
-        if count != expected:
-            raise ValueError(f"Stored {dt} inventory differs before activation")
+    if not cursor:
+        for dt in ORDER:
+            if dt == "Organization" and dt not in manifest["counts"]:
+                continue
+            where = selection(dt, organizations="Organization" in manifest["counts"])
+            count = frappe.db.sql(
+                f"select count(*) from `tab{dt}` r {where}",
+                (ctx.name,) * where.count("%s"),
+            )[0][0]
+            expected = 0 if dt in ("ToDo", "Record Share") else manifest["counts"][dt]
+            if count != expected:
+                raise ValueError(f"Stored {dt} inventory differs before activation")
     checked = Counter(dict.fromkeys(manifest["counts"], 0))
     sensitive_by_owner = Counter()
+    if cursor:
+        previous = json.loads(record.reconcile_counts)
+        checked.update(previous["checked"])
+        sensitive_by_owner.update(previous["sensitive"])
+    reused = 0
+    slice_started = monotonic()
+    boundary = min(cursor + 25, record.applied) if checkpoint else record.applied
     for seq, sha, payload in db.execute(
-        "select sequence,sha,payload from batches where sequence<=? order by sequence",
-        (record.applied,),
+        "select sequence,sha,payload from batches where sequence>? and sequence<=? order by sequence",
+        (cursor, boundary),
     ):
+        started = monotonic()
         receipt = frappe.get_doc(api.BATCH, f"{record.name}-{seq}", for_update=True)
         if (receipt.migration_run, receipt.sequence_number, receipt.digest) != (
             record.name,
             seq,
             sha,
-        ):
+        ) or hashlib.sha256(payload).hexdigest() != sha:
             raise ValueError("Committed receipt differs from publication")
-        for position, item in enumerate(json.loads(payload), 1):
+        items = json.loads(payload)
+        current_hash = (
+            release_checkpoint.fingerprint(items, ctx.name)
+            if checkpoint or receipt.release_fingerprint
+            else None
+        )
+        unchanged = (
+            not checkpoint
+            and current_hash
+            and current_hash == receipt.release_fingerprint
+        )
+        reused += int(bool(unchanged))
+        for position, item in enumerate(items, 1):
             try:
-                reconcile_item(db, cache, item)
+                if not unchanged:
+                    reconcile_item(db, cache, item)
                 checked[item["doctype"]] += 1
                 if item["doctype"] == "Sensitive Information":
                     sensitive_by_owner[item["row"]["record_doctype"]] += 1
@@ -600,6 +685,31 @@ def reconcile_business(db, ctx, record, manifest):
             except Exception as exc:
                 exc.migration_location = (seq, position, item["doctype"])
                 raise
+        if checkpoint:
+            frappe.db.set_value(
+                api.BATCH,
+                receipt.name,
+                {
+                    "reconcile_seconds": monotonic() - started,
+                    "release_fingerprint": current_hash,
+                },
+            )
+            if monotonic() - slice_started >= 10:
+                boundary = seq
+                break
+    if checkpoint:
+        record.update(
+            {
+                "reconcile_cursor": boundary,
+                "reconcile_counts": json.dumps(
+                    {"checked": checked, "sensitive": sensitive_by_owner}
+                ),
+                "worker_seen": now_datetime(),
+                "worker_phase": "Reconciling",
+            }
+        )
+        if boundary < record.applied:
+            return False
     deferred = {dt: manifest["counts"][dt] for dt in ("ToDo", "Record Share")}
     if any(
         checked[dt] + deferred.get(dt, 0) != count
@@ -626,10 +736,12 @@ def reconcile_business(db, ctx, record, manifest):
             "deferred_access_rows": deferred,
             "batch_chain_sha256": manifest["batch_chain_sha256"],
             "committed_business_batches": record.applied,
+            "unchanged_batches_verified_under_lock": reused,
             "deferred_batches": record.received - record.applied,
             "share_review": dict(access),
         }
     )
+    return True
 
 
 def activate(run: str):
@@ -649,20 +761,16 @@ def activate(run: str):
 
 
 def _activate(run):
-    uri = local_publication(run).resolve(strict=True).as_uri() + "?mode=ro"
-    with closing(sqlite3.connect(uri, uri=True)) as db:
+    held_shares.lock_activation()
+    ctx, record = lock_run(run)
+    with indexed_publication(run, record) as (db, hashes, manifest, path, stamp):
         try:
-            db.execute("pragma trusted_schema=OFF")
-            db.execute("begin")
-            manifest = verify_connection(db, run)
             if release_differences(manifest):
                 raise ValueError(
                     "Target application versions differ from the reviewed publication"
                 )
             if schema_differences(manifest):
                 raise ValueError("Target schema differs from publication")
-            held_shares.lock_activation()
-            ctx, record = lock_run(run)
             if (manifest["site"], manifest["context"], manifest) != (
                 frappe.local.site,
                 ctx.name,
@@ -679,10 +787,10 @@ def _activate(run):
             frappe.flags.ucm_publishing_context = ctx.name
             held = 0
             released = Counter({"ToDo": 0, "Record Share": 0})
-            for seq, sha, payload in db.execute(
-                "select sequence,sha,payload from batches where sequence>? order by sequence",
-                (record.applied,),
-            ):
+            for seq in range(record.applied + 1, manifest["batches"] + 1):
+                sha, payload = publication_index.read_batch(
+                    db, hashes, seq, manifest["batches"]
+                )
                 items = json.loads(payload)
                 dt = items[0]["doctype"]
                 if any(item["doctype"] != dt for item in items):
@@ -715,6 +823,7 @@ def _activate(run):
                         "digest": sha,
                     }
                 ).insert(set_name=f"{run}-{seq}", ignore_permissions=True)
+            publication_index.check_identity(path, stamp)
             ctx.context_status = "Active"
             ctx.save()
             report = json.loads(record.reconciliation_json)
@@ -732,9 +841,12 @@ def _activate(run):
                 run,
                 {
                     "applied": manifest["batches"],
+                    "worker_phase": "Activated",
+                    "worker_seen": now_datetime(),
                     "reconciliation_json": json.dumps(report),
                 },
             )
+            publication_index.check_identity(path, stamp)
             api.mark_activated(run)
             result = api._result(api._record(run))
             frappe.db.commit()

@@ -10,8 +10,8 @@ from pathlib import Path
 
 import frappe
 import pymysql
+from rehearsal_bench import BENCH
 
-BENCH = Path(__file__).resolve().parents[3]
 FORMAT = "ucm-generator-delegation-v1"
 AUDIT = {"creation", "modified", "owner", "modified_by"}
 # Select by the owning record, even when the stored fetched context is NULL or the child names another delegation.

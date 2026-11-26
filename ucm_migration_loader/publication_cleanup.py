@@ -2,17 +2,15 @@
 
 import json
 import os
-import sqlite3
 import tempfile
-from contextlib import closing
 from pathlib import Path
 
 import frappe
 
-from . import api
+from . import api, publication_index
 from .application import check_closed, lock_run
-from .frozen import ORDER, verify_connection
-from .publication_receiver import local_publication, remove_after_discard
+from .frozen import ORDER
+from .publication_receiver import indexed_publication, remove_after_discard
 from .publication_worker import audit_values
 from .stored_rows import checked_row
 
@@ -138,11 +136,7 @@ def discard(run: str, max_batches: int = 1, *, ticket=None, stop_at=None):
         "Publication cleaning",
     ):
         raise ValueError("Only a hidden full publication can be discarded")
-    uri = local_publication(run).resolve(strict=True).as_uri() + "?mode=ro"
-    with closing(sqlite3.connect(uri, uri=True)) as db:
-        db.execute("pragma trusted_schema=OFF")
-        db.execute("begin")
-        manifest = verify_connection(db, run)
+    with indexed_publication(run, record) as (db, hashes, manifest, path, stamp):
         if (manifest["site"], manifest["context"], manifest) != (
             frappe.local.site,
             ctx.name,
@@ -169,9 +163,9 @@ def discard(run: str, max_batches: int = 1, *, ticket=None, stop_at=None):
                 check_closed(ctx, pilot=False)
                 sequence = record.applied or 0
                 if sequence:
-                    sha, payload = db.execute(
-                        "select sha,payload from batches where sequence=?", (sequence,)
-                    ).fetchone()
+                    sha, payload = publication_index.read_batch(
+                        db, hashes, sequence, manifest["batches"]
+                    )
                     batch = frappe.get_doc(
                         api.BATCH, f"{run}-{sequence}", for_update=True
                     )
@@ -188,6 +182,7 @@ def discard(run: str, max_batches: int = 1, *, ticket=None, stop_at=None):
                 record.save(ignore_permissions=True)
                 if not record.applied:
                     remove_after_discard(record)
+                publication_index.check_identity(path, stamp)
                 frappe.db.commit()
                 if not record.applied:
                     break

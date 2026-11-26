@@ -15,11 +15,11 @@ from uuid import uuid4
 import frappe
 import pymysql
 import requests
+from rehearsal_bench import BENCH
 from rehearse import call, finish, insert_fixture, new_context
-from ucm_migration_loader.contract import digest
 from werkzeug.serving import make_server
 
-BENCH = Path(__file__).resolve().parents[3]
+from ucm_migration_loader.contract import digest
 
 
 @contextmanager

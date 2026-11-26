@@ -10,3 +10,6 @@ doc_events = {
     "Context": {"validate": "ucm_migration_loader.application.guard_context"},
     "Record Share": {"validate": "ucm_migration_loader.application.guard_share"},
 }
+
+before_request = ["ucm_migration_loader.migration_load.before_request"]
+after_request = ["ucm_migration_loader.migration_load.after_request"]

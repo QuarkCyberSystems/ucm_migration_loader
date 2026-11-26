@@ -292,3 +292,11 @@ The `wave50k` generator preset puts exactly 50,000 people in CHA and 250 in each
 `tests/benchmark_routes.py` runs one route at a time. Four BOL caseworkers read and save while CHA is loaded. Both routes deliberately reject a bad link and apply the same reconciliation, consent, protected-field, attachment and activation checks. The experimental SQL writer prepares UCM documents, executes their validation methods, inserts parents and children with MariaDB multi-row inserts and runs the post-insert hooks. Historical locks, tags, file storage, assignments and share operations retain their dedicated UCM commands. A separate timer measures the multi-row SQL statements. This writer is confined to the benchmark site.
 
 The benchmark scripts use the bench Python and the loader source directory on `PYTHONPATH`. After provisioning the two empty targets named in `benchmark_publication.py`, run its `freeze`, `orm` and `sql` phases against the same private `--work` directory. Run `benchmark_routes.py orm` and `benchmark_routes.py sql` sequentially with that directory. Use `benchmark_compare.py` to check both activation receipts, compare their batch chains and access outcomes, and combine those results with the independently verified raw-copy measurement.
+
+### Checkpoint and live-load recovery
+
+On a disposable site, stage a fresh generated context containing 60 Persons and 60 Person Notes in batches of two. From the bench sites directory, run the following with the new run digest. This rehearsal takes ownership of the fixture, sets its write routes, pauses apply using a slow synthetic request, interrupts reconciliation, resumes at the saved receipt, changes a target value without touching its modification timestamp, verifies activation rejects it, restores the value and activates the delegation.
+
+```sh
+../env/bin/python ../apps/ucm_migration_loader/tests/checkpoint_recovery.py --site REHEARSAL_SITE --run RUN_DIGEST
+```

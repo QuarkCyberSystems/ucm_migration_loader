@@ -1,5 +1,6 @@
 """Compare published business columns to UCM storage after controller validation."""
 
+from .batch_metrics import measure
 from .countries import _same
 from .shared_catalogs import SYSTEM
 
@@ -36,6 +37,7 @@ def row_differences(dt, row):
     return differences
 
 
+@measure("validation")
 def checked_row(dt, row):
     if differences := row_differences(dt, row):
         raise ValueError(

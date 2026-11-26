@@ -19,7 +19,12 @@
   "reconciliation_json",
   "approved_by",
   "activated_on",
-  "write_plan_json"
+  "write_plan_json",
+  "publication_stamp",
+  "reconcile_cursor",
+  "reconcile_counts",
+  "worker_phase",
+  "worker_seen"
  ],
  "fields": [
   {
@@ -32,6 +37,7 @@
   },
   {
    "fieldname": "context_id",
+   "search_index": 1,
    "label": "Context Id",
    "fieldtype": "Data",
    "read_only": 1,
@@ -120,6 +126,38 @@
    "label": "Write routes by DocType",
    "fieldtype": "Long Text",
    "read_only": 1
+  },
+  {
+   "fieldname": "publication_stamp",
+   "label": "Publication verification identity",
+   "fieldtype": "Small Text",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "reconcile_cursor",
+   "label": "Reconciled business batches",
+   "fieldtype": "Int",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reconcile_counts",
+   "label": "Reconciliation checkpoint counts",
+   "fieldtype": "Long Text",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "worker_phase",
+   "label": "Last worker phase",
+   "fieldtype": "Data",
+   "read_only": 1
+  },
+  {
+   "fieldname": "worker_seen",
+   "label": "Last worker checkpoint",
+   "fieldtype": "Datetime",
+   "read_only": 1
   }
  ],
  "permissions": [
@@ -129,7 +167,7 @@
   }
  ],
  "creation": "2026-11-18 00:00:00",
- "modified": "2026-11-20 23:45:00",
+ "modified": "2026-11-26 00:00:00",
  "title_field": "display_id",
  "show_title_field_in_link": 1,
  "search_fields": "display_id"
