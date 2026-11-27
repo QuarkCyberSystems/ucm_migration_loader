@@ -133,3 +133,110 @@ class TestJobSummary(IntegrationTestCase):
 		):
 			self.assertRaises(RuntimeError, publication_jobs.execute, run, "discard", 3, 5)
 		kept.assert_called_once_with(run, "discard", None)
+
+
+class TestStalledRun(IntegrationTestCase):
+	"""A job whose process was killed, or whose worker went down, changes nothing on the run: the form finds out
+	from the queue that no job is on it."""
+
+	def quiet(self, state="Publication applying", minutes=5, **values):
+		from frappe.utils import add_to_date, now_datetime
+
+		seen = add_to_date(now_datetime(), minutes=-minutes)
+		return make_run(state=state, worker_seen=seen, worker_phase="Writing Person", **values)
+
+	def shown(self, run) -> dict:
+		return run_overview.build(frappe.get_doc(api.RUN, run.name))
+
+	def test_a_load_without_a_job_is_shown_as_stopped(self):
+		shown = self.shown(self.quiet(applied=1))
+		self.assertTrue(shown["stalled"])
+		self.assertEqual(shown["batches_committed"], 1)
+		statuses = {step["step"]: step["status"] for step in shown["steps"]}
+		self.assertEqual(statuses["write"], "no job")
+		self.assertEqual(statuses["verify"], "waiting")
+
+	def test_a_discard_without_a_job_is_shown_as_stopped(self):
+		shown = self.shown(self.quiet(state="Publication cleaning"))
+		self.assertTrue(shown["stalled"])
+		self.assertEqual(shown["steps"][-1]["step"], "discard")
+		self.assertEqual(shown["steps"][-1]["status"], "no job")
+
+	def test_a_load_with_a_job_in_the_queue_is_at_work(self):
+		run = self.quiet()
+		with patch.object(run_overview, "working", return_value=True):
+			shown = self.shown(run)
+		self.assertFalse(shown["stalled"])
+		self.assertIn("running", [step["status"] for step in shown["steps"]])
+
+	def test_a_worker_heard_of_just_now_is_not_looked_up(self):
+		"""Between two jobs of a load the queue may be empty for a moment."""
+		run = self.quiet(minutes=0)
+		with patch.object(run_overview, "working", return_value=False) as looked_up:
+			self.assertFalse(self.shown(run)["stalled"])
+		looked_up.assert_not_called()
+
+	def test_a_queue_that_cannot_be_read_says_nothing(self):
+		run = self.quiet()
+		with patch("frappe.utils.background_jobs.get_queue", side_effect=RuntimeError("no redis")):
+			self.assertIsNone(run_overview.working(run.name))
+			self.assertFalse(self.shown(run)["stalled"])
+
+	def test_a_run_that_waits_for_a_person_is_never_stopped(self):
+		for state in ("Publication staged", "Publication paused", "Publication ready", "Activated"):
+			self.assertFalse(self.shown(self.quiet(state=state))["stalled"], state)
+
+	def test_the_queue_is_searched_for_the_runs_own_jobs(self):
+		from types import SimpleNamespace
+
+		run, other = self.quiet(), self.quiet()
+
+		def job(name, site=None):
+			kwargs = {"site": site or frappe.local.site, "kwargs": {"run": name, "action": "apply"}}
+			return SimpleNamespace(kwargs=kwargs)
+
+		jobs = {"waiting": job(other.name), "elsewhere": job(run.name, site="another.site"), "gone": None}
+		queue = SimpleNamespace(
+			get_job_ids=lambda: ["waiting", "gone"],
+			started_job_registry=SimpleNamespace(get_job_ids=lambda: ["elsewhere"]),
+			fetch_job=lambda job_id: jobs[job_id],
+		)
+		with patch("frappe.utils.background_jobs.get_queue", return_value=queue):
+			self.assertIs(run_overview.working(run.name), False)
+			self.assertIs(run_overview.working(other.name), True)
+			jobs["started"] = job(run.name)
+			queue.started_job_registry = SimpleNamespace(get_job_ids=lambda: ["started"])
+			self.assertIs(run_overview.working(run.name), True)
+
+
+class TestFailedJob(IntegrationTestCase):
+	def test_a_job_that_lost_its_connection_takes_a_new_one_to_say_so(self):
+		with (
+			patch.object(frappe.db, "rollback", side_effect=frappe.db.OperationalError(2006, "gone away")),
+			patch.object(frappe.db, "close") as closed,
+			patch.object(frappe.db, "connect") as connected,
+		):
+			publication_jobs._roll_back()
+		closed.assert_called_once()
+		connected.assert_called_once()
+
+	def test_a_job_that_kept_its_connection_only_rolls_back(self):
+		with (
+			patch.object(frappe.db, "rollback") as rolled_back,
+			patch.object(frappe.db, "connect") as connected,
+		):
+			publication_jobs._roll_back()
+		rolled_back.assert_called_once()
+		connected.assert_not_called()
+
+	def test_a_failed_apply_pauses_the_run_with_what_failed(self):
+		context = hidden_context("LDS4")
+		run = make_run(state="Publication applying", context=context, dispatch_id=4, applied=1).name
+		with (
+			patch.object(frappe.db, "commit"),
+			patch.object(publication_jobs, "set_based", side_effect=frappe.db.OperationalError(2013, "lost")),
+			patch.object(publication_jobs, "_roll_back"),
+		):
+			self.assertRaises(frappe.db.OperationalError, publication_jobs.execute, run, "apply", 4, 5)
+		self.assertEqual(column(run, "state"), "Publication paused")
+		self.assertEqual(column(run, "finding"), "apply after committed batch 1: OperationalError")

@@ -267,6 +267,7 @@ async function configure_write_routes(frm) {
 const STATUS = {
 	done: [__("Done"), "green"],
 	running: [__("Running"), "blue"],
+	"no job": [__("No job"), "red"],
 	paused: [__("Paused"), "orange"],
 	waiting: [__("Waiting"), "gray"],
 	failed: [__("Failed"), "red"],
@@ -553,6 +554,20 @@ function findings_html(data) {
 function show_intro(frm, data) {
 	const state = data.state,
 		who = data.delegation;
+	if (data.stalled) {
+		// the job's process was killed or its worker went down: the run keeps its state, and nothing works on it
+		const text =
+			state === "Publication cleaning"
+				? __(
+						"No job is working on this discard: its worker stopped. Choose Migration, Resume cleanup."
+				  )
+				: __(
+						"No job is working on this load: its worker stopped after batch {0}. Nothing is half written. Choose Migration, Resume from last receipt.",
+						[number(data.batches_committed)]
+				  );
+		frm.set_intro(text, "red");
+		return;
+	}
 	if (state === "Publication ready") {
 		frm.set_intro(
 			__(

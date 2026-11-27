@@ -25,6 +25,8 @@ _UNFINISHED = {
 	CLEANING: "stopped",
 	DISCARDED: "stopped",
 }
+# a run at work whose worker has not been heard of for so many seconds is looked up in the queue
+QUIET = 60
 RECEIPT_SECONDS = ("write_seconds", "validation_seconds", "attachment_seconds", "verify_seconds")
 
 
@@ -207,6 +209,40 @@ def _delegation(context: str) -> str:
 	return name or code or context
 
 
+def working(run: str) -> bool | None:
+	"""Whether the migration queue holds a job of this run, waiting or at work. A job whose process was killed,
+	or whose worker went down, leaves the queue; the run keeps the state it had. None where the queue cannot be
+	read."""
+	import frappe
+	from frappe.utils.background_jobs import get_queue
+
+	from ucm_migration_loader import api
+
+	try:
+		queue = get_queue(api.QUEUE)
+		for job_id in (*queue.get_job_ids(), *queue.started_job_registry.get_job_ids()):
+			job = queue.fetch_job(job_id)
+			kwargs = (job.kwargs if job else None) or {}
+			if kwargs.get("site") == frappe.local.site and (kwargs.get("kwargs") or {}).get("run") == run:
+				return True
+		return False
+	except Exception:
+		return None
+
+
+def stalled(record) -> bool:
+	"""Whether a run that should be at work has no job: nothing was heard of its worker for a while, and the
+	queue holds no job of it."""
+	from frappe.utils import get_datetime, now_datetime
+
+	if record.state not in (APPLYING, CLEANING):
+		return False
+	heard = get_datetime(record.get("worker_seen") or record.modified)
+	if (now_datetime() - heard).total_seconds() < QUIET:
+		return False
+	return working(record.name) is False
+
+
 def is_publication(manifest: dict) -> bool:
 	from ucm_migration_loader.frozen import FORMAT
 
@@ -251,9 +287,15 @@ def build(record) -> dict:
 		return {"publication": False}
 	manifest, report, run, run_steps = _parts(record)
 	url = frappe.conf.get("ucm_migration_quality_url")
+	no_job = stalled(record)
+	for step in run_steps:
+		if no_job and step["status"] == "running":
+			step["status"] = "no job"
 	return {
 		"publication": True,
 		"state": record.state,
+		"stalled": no_job,
+		"batches_committed": record.applied or 0,
 		"finding": record.finding,
 		"delegation": _delegation(record.context_id),
 		"steps": run_steps,

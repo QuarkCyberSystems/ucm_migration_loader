@@ -119,6 +119,16 @@ def _keep_summary(run, action, seconds):
 		frappe.log_error(title="UCM migration run summary")
 
 
+def _roll_back() -> None:
+	"""Undo what a failed job left open. A job whose database connection was lost takes a new one, so that the
+	run can say what happened to it."""
+	try:
+		frappe.db.rollback()
+	except Exception:
+		frappe.db.close()
+		frappe.db.connect()
+
+
 def execute(run, action, ticket, max_batches, stop_at=None):
 	api._operator()
 	started, worked = monotonic(), False
@@ -171,7 +181,7 @@ def _execute(run, action, ticket, max_batches, stop_at):
 				enqueue(run, action, ticket, max_batches, stop_at)
 		return True
 	except Exception as exc:
-		frappe.db.rollback()
+		_roll_back()
 		_, record = lock_run(run)
 		if record.dispatch_id == ticket:
 			where = f"after committed batch {record.applied or 0}"
