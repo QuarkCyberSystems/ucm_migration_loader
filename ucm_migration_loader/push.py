@@ -1,7 +1,7 @@
 """Seal one delegation of a publishing database into a file, and take it to a UCM site."""
 
 import argparse
-import hashlib
+import base64
 import json
 import os
 import sys
@@ -20,6 +20,73 @@ from .contract import (
 	check_code,
 	digest,
 )
+
+ALIASES = {"activity-order": "upload-order", "freeze": "prepare"}
+# the options a command cannot do without, and what it says where one is missing
+SOURCE = (("source_config", "context", "snapshot"), "Supply --source-config, --context and --snapshot")
+SEALED = (("run", "publication"), "Supply --publication and the retained --run")
+ON_A_RUN = (("run",), "Supply --run")
+REQUIRED = {
+	"source-inventory": SOURCE,
+	"upload-order": SOURCE,
+	"prepare": SOURCE,
+	"check-publication": SEALED,
+	"locate-item": (
+		("publication", "run", "sequence", "item"),
+		"Supply --publication, --run, --sequence and --item",
+	),
+	"propose": (("handoff",), "Supply --handoff"),
+	"send-publication": SEALED,
+	"transfer-status": (("run",), "Supply the approved --run"),
+	"status": ON_A_RUN,
+	"report": ON_A_RUN,
+	"quality": ON_A_RUN,
+	"apply": ON_A_RUN,
+	"pause": ON_A_RUN,
+	"activate": ON_A_RUN,
+	"discard": ON_A_RUN,
+}
+
+
+class Site:
+	"""The receiving site as the publishing account reaches it: its methods over HTTPS, with the account's
+	token."""
+
+	def __init__(self, url: str):
+		self.url = url.rstrip("/")
+		self.session = requests.Session()
+		self.session.mount(
+			"https://",
+			HTTPAdapter(
+				max_retries=Retry(
+					total=3,
+					backoff_factor=0.5,
+					allowed_methods={"POST"},
+					status_forcelist=(429, 502, 503, 504),
+					raise_on_status=False,
+				)
+			),
+		)
+
+	def _post(self, module: str, method: str, data: dict):
+		response = self.session.post(
+			f"{self.url}/api/method/ucm_migration_loader.{module}.{method}",
+			json=data,
+			headers={"Authorization": "token " + os.environ["UCM_MIGRATION_TOKEN"]},
+			timeout=(8, 45),
+			allow_redirects=False,
+		)
+		if response.status_code != 200:
+			raise SystemExit(f"{method} returned HTTP {response.status_code}. Check the run and target log.")
+		return response.json()["message"]
+
+	def api(self, method: str, **data):
+		"""A run's status, report, metrics and actions."""
+		return self._post("api", method, data)
+
+	def transfer(self, method: str, **data):
+		"""The transfer of an approved run's sealed file."""
+		return self._post("publication_transport", method, data)
 
 
 def hand_over_quality(call, args):
@@ -70,10 +137,7 @@ def main():
 	publishing.main()
 
 
-def run(argv: list[str] | None = None, readable: bool = False):
-	"""One detailed command, every value an option. `readable`: answer in sentences where the command has some."""
-	from .publishing import LOCAL, show
-
+def build_parser() -> argparse.ArgumentParser:
 	parser = argparse.ArgumentParser(
 		prog="ucm-push",
 		description=__doc__,
@@ -81,10 +145,9 @@ def run(argv: list[str] | None = None, readable: bool = False):
 		"send, status and quality from the publication's folder. ucm-push --help-settings describes the "
 		"settings file.",
 	)
-	aliases = {"activity-order": "upload-order", "freeze": "prepare"}
 	parser.add_argument(
 		"action",
-		type=lambda value: aliases.get(value, value),
+		type=lambda value: ALIASES.get(value, value),
 		choices=[
 			"source-inventory",
 			"upload-order",
@@ -156,24 +219,32 @@ def run(argv: list[str] | None = None, readable: bool = False):
 		action="store_true",
 		help="Create the metrics table when it is absent",
 	)
-	args = parser.parse_args(argv)
-	if (args.action == "quality") != bool(args.quality_out or args.quality_config):
+	return parser
+
+
+def check_options(parser: argparse.ArgumentParser, args) -> None:
+	"""Refuse a command whose options do not fit it, before it does anything."""
+	from .publishing import LOCAL
+
+	action = args.action
+	if (action == "quality") != bool(args.quality_out or args.quality_config):
 		parser.error("Use --quality-out or --quality-config with quality")
 	if (args.quality_table or args.create_quality_table) and not args.quality_config:
 		parser.error("--quality-table and --create-quality-table require --quality-config")
-	if args.ucm_version and args.action != "prepare":
+	if args.ucm_version and action != "prepare":
 		parser.error("--ucm-version requires prepare")
-	if args.findings_out and args.action != "prepare":
+	if args.findings_out and action != "prepare":
 		parser.error("--findings-out requires prepare")
-	if bool(args.publication_out) != (args.action == "prepare") or (
-		args.private_files and args.action != "prepare"
-	):
+	if bool(args.publication_out) != (action == "prepare") or (args.private_files and action != "prepare"):
 		parser.error("Supply --publication-out for prepare and --private-files when attachments are present")
-	if args.max_batches is not None and (
-		args.action not in ("apply", "send-publication") or args.max_batches < 1
-	):
+	if args.max_batches is not None and (action not in ("apply", "send-publication") or args.max_batches < 1):
 		parser.error("--max-batches requires apply or send-publication and a positive limit")
-	if args.action not in LOCAL:
+	if action != "locate-item" and (args.sequence is not None or args.item is not None):
+		parser.error("--sequence and --item require locate-item")
+	options, message = REQUIRED[action]
+	if not all(getattr(args, option) for option in options):
+		parser.error(message)
+	if action not in LOCAL:
 		# before any work: a transfer verifies the whole file first, and would fail only afterwards
 		if not args.url or urlsplit(args.url).scheme != "https":
 			parser.error("Set --url to the target HTTPS base URL")
@@ -182,207 +253,164 @@ def run(argv: list[str] | None = None, readable: bool = False):
 				"Set UCM_MIGRATION_TOKEN to the publishing account's key:secret, or name its file as "
 				"token_file in the settings"
 			)
-	if args.action == "locate-item":
-		from .frozen import locate_item
 
-		if not args.publication or not args.run or not args.sequence or not args.item:
-			parser.error("Supply --publication, --run, --sequence and --item")
-		print(json.dumps(locate_item(args.publication, args.run, args.site, args.sequence, args.item)))
-		return
-	if args.sequence is not None or args.item is not None:
-		parser.error("--sequence and --item require locate-item")
-	if args.action == "check-publication":
-		from .frozen import verify_publication
 
-		if not args.run or not args.publication:
-			parser.error("Supply --publication and the retained --run")
-		manifest = verify_publication(args.publication, args.run)
-		if manifest["site"] != args.site:
-			raise ValueError("Publication targets another site")
-		with args.publication.open("rb") as file:
-			fingerprint = hashlib.file_digest(file, "sha256").hexdigest()
-			size = os.fstat(file.fileno()).st_size
-		print(
-			json.dumps(
-				{
-					"run": args.run,
-					"verified": True,
-					"file_sha256": fingerprint,
-					"file_bytes": size,
-					**manifest,
-				}
-			)
+# ---------------------------------------------------------------------------------------------------------------
+# on the publishing host alone
+
+
+def _source_inventory(args, site):
+	from .frozen import source_snapshot
+	from .source_inventory import inventory
+
+	with source_snapshot(args.source_config) as source:
+		return {"site": args.site, "snapshot": args.snapshot, **inventory(source, args.context)}
+
+
+def _upload_order(args, site):
+	from .activity_order import order_report
+	from .frozen import source_snapshot
+
+	with source_snapshot(args.source_config) as source:
+		order = order_report(source, args.context, args.batch_size)
+	return {"site": args.site, "context": args.context, "snapshot": args.snapshot, **order}
+
+
+def _prepare(args, site):
+	from .frozen import freeze, source_snapshot
+
+	with source_snapshot(args.source_config) as source:
+		return freeze(
+			source,
+			args.publication_out,
+			args.private_files,
+			args.site,
+			args.snapshot,
+			args.context,
+			args.batch_size,
+			args.batch_bytes,
+			args.findings_out,
+			ucm_version=args.ucm_version,
 		)
-		return
-	session = requests.Session()
-	session.mount(
-		"https://",
-		HTTPAdapter(
-			max_retries=Retry(
-				total=3,
-				backoff_factor=0.5,
-				allowed_methods={"POST"},
-				status_forcelist=(429, 502, 503, 504),
-				raise_on_status=False,
-			)
-		),
-	)
 
-	def call(method, **data):
-		module = "publication_transport" if args.action in ("send-publication", "transfer-status") else "api"
-		response = session.post(
-			f"{args.url.rstrip('/')}/api/method/ucm_migration_loader.{module}.{method}",
-			json=data,
-			headers={"Authorization": "token " + os.environ["UCM_MIGRATION_TOKEN"]},
-			timeout=(8, 45),
-			allow_redirects=False,
-		)
-		if response.status_code != 200:
-			raise SystemExit(f"{method} returned HTTP {response.status_code}. Check the run and target log.")
-		return response.json()["message"]
 
-	if args.action == "transfer-status":
-		if not args.run:
-			parser.error("Supply the approved --run")
-		receipt = call("status", run=args.run)
-		if (receipt["site"], receipt["run"]) != (args.site, args.run):
-			raise ValueError("Target transfer approval differs")
-		show(args.action, receipt, readable)
-		return
+def _for_this_site(args) -> dict:
+	"""The manifest of the sealed file named, checked whole; refused where it was sealed for another site."""
+	from .frozen import verify_publication
 
-	if args.action == "send-publication":
-		import base64
+	manifest = verify_publication(args.publication, args.run)
+	if manifest["site"] != args.site:
+		raise ValueError("Publication targets another site")
+	return manifest
 
-		from .frozen import verify_publication
 
-		if not args.run or not args.publication:
-			parser.error("Supply --publication and the retained --run")
-		if verify_publication(args.publication, args.run)["site"] != args.site:
-			raise ValueError("Publication targets another site")
-		receipt = call("status", run=args.run)
-		with args.publication.open("rb") as publication_file:
-			checksum = hashlib.file_digest(publication_file, "sha256").hexdigest()
-			size = os.fstat(publication_file.fileno()).st_size
-			if (
-				receipt["sha256"],
-				receipt["size"],
-				receipt["site"],
-				receipt["run"],
-			) != (checksum, size, args.site, args.run):
-				raise ValueError("Target approval differs from the publication")
-			offset = receipt["offset"]
-			chunk_size = TRANSFER_CHUNK
-			if not 0 <= offset <= size or (offset != size and offset % chunk_size):
-				raise ValueError("Invalid transfer checkpoint")
+def _check_publication(args, site):
+	from .frozen import hand_off
+
+	return hand_off(args.publication, args.run, _for_this_site(args))
+
+
+def _locate_item(args, site):
+	from .frozen import locate_item
+
+	return locate_item(args.publication, args.run, args.site, args.sequence, args.item)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# with the site
+
+
+def _propose(args, site):
+	handoff = json.loads(args.handoff.read_text())
+	if handoff.get("site") != args.site:
+		raise ValueError("The hand-off is for another site")
+	return {**site.api("propose", handoff=handoff), "check_code": check_code(handoff["file_sha256"])}
+
+
+def _transfer_status(args, site):
+	receipt = site.transfer("status", run=args.run)
+	if (receipt["site"], receipt["run"]) != (args.site, args.run):
+		raise ValueError("Target transfer approval differs")
+	return receipt
+
+
+def _send_publication(args, site):
+	"""Send the sealed file from where the site has it, piece by piece. Each answer is checked against the file
+	in hand: the site, the run, the fingerprint and the size it was approved with."""
+	from .frozen import file_identity
+
+	_for_this_site(args)
+	checksum, size = file_identity(args.publication)
+	approved = (args.run, args.site, checksum, size)
+
+	def checked(receipt, least):
+		if (receipt["run"], receipt["site"], receipt["sha256"], receipt["size"]) != approved:
+			raise ValueError("Target approval differs from the publication")
+		offset = receipt["offset"]
+		if not least <= offset <= size or (offset != size and offset % TRANSFER_CHUNK):
+			raise ValueError("Unexpected transfer checkpoint")
+		return offset
+
+	receipt = site.transfer("status", run=args.run)
+	offset = checked(receipt, 0)
+	sent = 0
+	with args.publication.open("rb") as publication_file:
+		while offset < size and (args.max_batches is None or sent < args.max_batches):
 			publication_file.seek(offset)
-			count = 0
-			while offset < size and (args.max_batches is None or count < args.max_batches):
-				chunk = publication_file.read(chunk_size)
-				receipt = call(
-					"upload",
-					run=args.run,
-					offset=offset,
-					data=base64.b64encode(chunk).decode("ascii"),
-				)
-				next_offset = receipt["offset"]
-				if (
-					(
-						receipt["run"],
-						receipt["site"],
-						receipt["sha256"],
-						receipt["size"],
-					)
-					!= (args.run, args.site, checksum, size)
-					or not offset + len(chunk) <= next_offset <= size
-					or (next_offset != size and next_offset % chunk_size)
-				):
-					raise ValueError("Unexpected transfer checkpoint")
-				# A second authorized sender may have already completed later chunks.
-				offset = next_offset
-				publication_file.seek(offset)
-				if args.progress or sys.stderr.isatty():
-					print(
-						f"Transferred {offset:,} of {size:,} bytes ({offset / size:.1%})",
-						file=sys.stderr,
-						flush=True,
-					)
-				count += 1
-		show(args.action, receipt, readable)
-		return
-
-	if args.action in ("source-inventory", "upload-order", "prepare"):
-		if not all((args.source_config, args.context, args.snapshot)):
-			parser.error("Supply --source-config, --context and --snapshot")
-		with pymysql.connect(**json.loads(args.source_config.read_text())) as conn:
-			with conn.cursor() as cur:
-				cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-				cur.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
-
-			if args.action == "source-inventory":
-				from .source_inventory import inventory
-
+			piece = publication_file.read(TRANSFER_CHUNK)
+			receipt = site.transfer(
+				"upload", run=args.run, offset=offset, data=base64.b64encode(piece).decode("ascii")
+			)
+			# another sender of the same account may have completed later pieces already
+			offset = checked(receipt, offset + len(piece))
+			sent += 1
+			if args.progress or sys.stderr.isatty():
 				print(
-					json.dumps(
-						{
-							"site": args.site,
-							"snapshot": args.snapshot,
-							**inventory(conn, args.context),
-						}
-					)
+					f"Transferred {offset:,} of {size:,} bytes ({offset / size:.1%})",
+					file=sys.stderr,
+					flush=True,
 				)
-				return
-			if args.action == "prepare":
-				from .frozen import freeze
+	return receipt
 
-				print(
-					json.dumps(
-						freeze(
-							conn,
-							args.publication_out,
-							args.private_files,
-							args.site,
-							args.snapshot,
-							args.context,
-							args.batch_size,
-							args.batch_bytes,
-							args.findings_out,
-							ucm_version=args.ucm_version,
-						)
-					)
-				)
-				return
-			if args.action == "upload-order":
-				from .activity_order import order_report
 
-				order = order_report(conn, args.context, args.batch_size)
-				print(
-					json.dumps(
-						{
-							"site": args.site,
-							"context": args.context,
-							"snapshot": args.snapshot,
-							**order,
-						}
-					)
-				)
-				return
-	if args.action == "quality":
-		if not args.run:
-			parser.error("Supply --run")
-		result = hand_over_quality(call, args)
-	elif args.action == "propose":
-		if not args.handoff:
-			parser.error("Supply --handoff")
-		handoff = json.loads(args.handoff.read_text())
-		if handoff.get("site") != args.site:
-			raise ValueError("The hand-off is for another site")
-		result = {**call("propose", handoff=handoff), "check_code": check_code(handoff["file_sha256"])}
-	else:
-		if not args.run:
-			parser.error("Supply --run")
-		options = {"max_batches": args.max_batches} if args.action == "apply" and args.max_batches else {}
-		result = call(args.action, run=args.run, **options)
-	show(args.action, result, readable)
+def _quality(args, site):
+	return hand_over_quality(site.api, args)
+
+
+def _on_a_run(args, site):
+	"""status, report and the actions of a Migration Admin: the site's method of the same name."""
+	options = {"max_batches": args.max_batches} if args.action == "apply" and args.max_batches else {}
+	return site.api(args.action, run=args.run, **options)
+
+
+ACTIONS = {
+	"source-inventory": _source_inventory,
+	"upload-order": _upload_order,
+	"prepare": _prepare,
+	"check-publication": _check_publication,
+	"locate-item": _locate_item,
+	"propose": _propose,
+	"send-publication": _send_publication,
+	"transfer-status": _transfer_status,
+	"quality": _quality,
+	"status": _on_a_run,
+	"report": _on_a_run,
+	"apply": _on_a_run,
+	"pause": _on_a_run,
+	"activate": _on_a_run,
+	"discard": _on_a_run,
+}
+
+
+def run(argv: list[str] | None = None, readable: bool = False):
+	"""One detailed command, every value an option. `readable`: answer in sentences where the command has some."""
+	from .publishing import LOCAL, show
+
+	parser = build_parser()
+	args = parser.parse_args(argv)
+	check_options(parser, args)
+	site = None if args.action in LOCAL else Site(args.url)
+	show(args.action, ACTIONS[args.action](args, site), readable)
 
 
 if __name__ == "__main__":

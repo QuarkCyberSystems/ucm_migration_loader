@@ -129,8 +129,6 @@ def attach_picture_bytes(person, source_file, content, *, folder=None, insert=in
 
 
 def insert_person(source, target, record, private_root, cache):
-	import frappe
-
 	from .runs import only_admin
 
 	only_admin()

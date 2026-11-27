@@ -17,7 +17,6 @@ from . import constants, publication_index, runs
 from .contract import encoded, table_signatures
 from .frozen import (
 	CHILDREN,
-	FORMAT,
 	ORDER,
 	TABLES,
 	application_versions,

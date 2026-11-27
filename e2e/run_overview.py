@@ -21,8 +21,6 @@ import time
 from playwright.sync_api import expect, sync_playwright
 from set_based_route import action, close, session
 
-from ucm_migration_loader import runs
-
 SHOTS = pathlib.Path(__file__).resolve().parent / "screenshots"
 TALL = 2000  # the Desk scrolls inside the page: a tall window shows a whole form in one screenshot
 SETTING = "ucm_migration_quality_url"

@@ -392,7 +392,7 @@ def test_a_hand_off_for_another_site_is_not_proposed(host, monkeypatch):
 		json.dumps({"run": RUN, "site": "elsewhere", "file_sha256": "0" * 64})
 	)
 	monkeypatch.setenv("UCM_MIGRATION_TOKEN", "key:secret")
-	with pytest.raises(ValueError, match="another site"):
+	with pytest.raises(publishing.Stop, match="Not done: The hand-off is for another site"):
 		publishing.main(["propose", "DEMO01-2026-01-02", "--json"])
 
 

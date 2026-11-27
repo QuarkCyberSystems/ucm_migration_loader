@@ -87,7 +87,7 @@ def _at(target, name: str, call: int, mode: str, *, after: bool = False):
 def _hooks(point: str, mode: str, call: int, delete_rows: int) -> list:
 	from ucm.ucm.doctype.record_share import record_share
 
-	from ucm_migration_loader import api, constants
+	from ucm_migration_loader import api
 	from ucm_migration_loader.ucm_migration_loader import set_based
 
 	return {
@@ -399,7 +399,7 @@ def _started(run: str) -> bool:
 	"""Whether a job of this run is at work in the migration queue (not only waiting in it)."""
 	from frappe.utils.background_jobs import get_queue
 
-	from ucm_migration_loader import api, constants
+	from ucm_migration_loader import constants
 
 	queue = get_queue(constants.QUEUE)
 	jobs = [queue.fetch_job(job_id) for job_id in queue.started_job_registry.get_job_ids()]
@@ -432,7 +432,7 @@ def _job_registries(run: str) -> dict:
 	"""Where the queue keeps the jobs of this run."""
 	from frappe.utils.background_jobs import get_queue
 
-	from ucm_migration_loader import api, constants
+	from ucm_migration_loader import constants
 
 	queue = get_queue(constants.QUEUE)
 	out = {}
@@ -450,7 +450,7 @@ def worker(args) -> dict:
 	"""Kill the bench's own worker's job of a load, and resume it, once for each delay."""
 	from set_based_queue import follow
 
-	from ucm_migration_loader import api, constants
+	from ucm_migration_loader import api
 
 	if args.publication:
 		stage(args.publication, args.run)

@@ -29,7 +29,6 @@ This module runs on the publishing host: it imports nothing of Frappe.
 """
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -343,20 +342,15 @@ def new_folder(publications: Path, snapshot: str | None, code: str, today: date)
 def seal(conf: dict, delegation: str, snapshot: str | None = None, today: date | None = None) -> dict:
 	"""Seal one delegation into a new folder: what it holds, the sealed file, and the hand-off for the site
 	operator. Returns the hand-off, with the folder and the delegation's code and name."""
-	import pymysql
-
-	from .frozen import freeze, verify_publication
+	from .frozen import freeze, hand_off, source_snapshot, verify_publication
 	from .source_inventory import inventory
 
 	missing = [key for key in ("site", "source_config", "publications") if not conf.get(key)]
 	if missing:
 		raise Stop("The settings file lacks: " + ", ".join(missing))
 	private = Path(conf["private_files"]).expanduser() if conf.get("private_files") else None
-	with pymysql.connect(**json.loads(Path(conf["source_config"]).expanduser().read_text())) as source:
-		with source.cursor() as cursor:
-			# one view of the publishing database for the inventory and the sealing
-			cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-			cursor.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+	# one view of the publishing database for the inventory and the sealing
+	with source_snapshot(conf["source_config"]) as source:
 		identifier, code, name = find(source, delegation)
 		snapshot, folder = new_folder(
 			Path(conf["publications"]).expanduser(), snapshot, code, today or date.today()
@@ -384,18 +378,7 @@ def seal(conf: dict, delegation: str, snapshot: str | None = None, today: date |
 				f"{code} was not sealed: {missing.filename} is missing. Check private_files in the settings."
 			) from None
 	manifest = verify_publication(folder / SEALED, published["run"])
-	with (folder / SEALED).open("rb") as file:
-		fingerprint = hashlib.file_digest(file, "sha256").hexdigest()
-		size = os.fstat(file.fileno()).st_size
-	handoff = {
-		"run": published["run"],
-		"verified": True,
-		"file_sha256": fingerprint,
-		"file_bytes": size,
-		# for the site operator who approves it: the site makes the delegation's context from these
-		"delegation": {"code": code, "name": name},
-		**manifest,
-	}
+	handoff = hand_off(folder / SEALED, published["run"], manifest, {"code": code, "name": name})
 	(folder / HANDOFF).write_text(json.dumps(handoff, indent=1) + "\n")
 	return {**handoff, "folder": str(folder), "delegation_code": code, "delegation_name": name}
 
@@ -492,4 +475,8 @@ def main(argv: list[str] | None = None) -> None:
 		seal_command(argv[1:], terminal)
 		return
 	argv, readable = fill(argv, terminal)
-	push.run(argv, readable)
+	try:
+		push.run(argv, readable)
+	except (ValueError, OSError) as refused:
+		# a refusal of the command or of a file it was given: a sentence for the operator, not a traceback
+		raise Stop(f"Not done: {refused}") from None

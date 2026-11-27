@@ -22,8 +22,6 @@ import pathlib
 from manual_screenshots import OUT, PLAIN, cut, desk
 from playwright.sync_api import expect
 
-from ucm_migration_loader import runs
-
 
 def approve(page, handoff: pathlib.Path, publisher: str, shots: bool) -> str:
 	"""Approve a hand-off from the list of runs. Returns the run."""

@@ -4,7 +4,7 @@ on the context and on shares."""
 import frappe
 from frappe import _
 
-from . import constants, runs
+from . import constants
 
 # the DocTypes whose shares are held back while their delegation is loading
 SHARED = ("Person", "Case", "Case Member", "Person Consent", "Activity")

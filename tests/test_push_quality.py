@@ -244,7 +244,7 @@ def test_the_run_is_not_told_when_the_table_could_not_be_written(site, monkeypat
 def test_metrics_that_are_not_the_ones_asked_for_are_refused(change, site, monkeypatch, capsys, tmp_path):
 	site.quality = {**answer(), **change}
 	out = tmp_path / "metrics.csv"
-	with pytest.raises(ValueError, match="another run or changed in transit"):
+	with pytest.raises(SystemExit, match="another run or changed in transit"):
 		run(monkeypatch, capsys, "--run", RUN, "--quality-out", str(out))
 	assert not out.exists()
 	assert site.sent("quality_received") == []
@@ -252,7 +252,7 @@ def test_metrics_that_are_not_the_ones_asked_for_are_refused(change, site, monke
 
 def test_a_row_changed_in_transit_is_refused(site, monkeypatch, capsys, tmp_path):
 	site.quality["metrics"][0]["target_value"] = 100
-	with pytest.raises(ValueError, match="changed in transit"):
+	with pytest.raises(SystemExit, match="changed in transit"):
 		run(monkeypatch, capsys, "--run", RUN, "--quality-out", str(tmp_path / "m.csv"))
 
 

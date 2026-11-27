@@ -6,7 +6,7 @@ import os
 import sqlite3
 import tempfile
 from collections import Counter
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import date, time, timedelta
 from decimal import Decimal
 from itertools import islice
@@ -441,6 +441,31 @@ def freeze(
 			db.commit()
 		os.link(tmp, output)
 	return {"run": digest(manifest), **manifest}
+
+
+@contextmanager
+def source_snapshot(config):
+	"""One unchanging view of the publishing database, for everything a sealing reads. `config`: the private file
+	of the read-only connection."""
+	with pymysql.connect(**json.loads(Path(config).expanduser().read_text())) as source:
+		with source.cursor() as cursor:
+			cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+			cursor.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+		yield source
+
+
+def file_identity(path) -> tuple[str, int]:
+	"""A sealed file's fingerprint and size: what an approval is bound to."""
+	with Path(path).open("rb") as file:
+		return hashlib.file_digest(file, "sha256").hexdigest(), os.fstat(file.fileno()).st_size
+
+
+def hand_off(path, run, manifest, delegation=None) -> dict:
+	"""What the site approves in place of a sealed file: its run, its manifest, and the file's fingerprint and
+	size. `delegation`: its code and name, from which the site makes the context where it has none."""
+	fingerprint, size = file_identity(path)
+	about = {"delegation": delegation} if delegation else {}
+	return {"run": run, "verified": True, "file_sha256": fingerprint, "file_bytes": size, **about, **manifest}
 
 
 def verify_publication(path, run):
