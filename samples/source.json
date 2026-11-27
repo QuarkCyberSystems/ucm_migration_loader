@@ -1,0 +1,7 @@
+{
+	"host": "publisher-db.example.org",
+	"port": 3306,
+	"user": "migration_reader",
+	"password": "<password of the read-only account>",
+	"database": "ucm_publication"
+}

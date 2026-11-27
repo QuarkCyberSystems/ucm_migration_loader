@@ -2,6 +2,7 @@
 file, `seal` does the three steps of a publication in one, and the commands that follow find their run in the
 publication's folder.
 
+	ucm-push init                 write the settings file and the two connection files, to fill in
 	ucm-push seal DEMO01          seal the delegation with that code into a new folder, with its hand-off
 	ucm-push send DEMO01-2026-11-27     send the sealed file once the site operator has approved it
 	ucm-push status               from inside the folder: where the run stands on the site
@@ -50,6 +51,66 @@ STATE = {
 	"Discarded": "Discarded",
 	"Rejected": "Refused by the site",
 }
+
+
+# The files a publishing host keeps, as `ucm-push init` writes them and as the repository's samples/ folder shows
+# them. {folder} is where they are written; the passwords are placeholders to replace.
+SETTINGS_SAMPLE = """\
+# Settings of ucm-push on this publishing host: what is the same for every delegation.
+# Passwords and tokens are not written here: this file names the private files that hold them.
+
+# The receiving site, as its bench names it, and its HTTPS address
+site = "ucm.example.org"
+url = "https://ucm.example.org"
+
+# The read-only connection to the publishing database: see source.json
+source_config = "{folder}/source.json"
+
+# The private files of the publishing site, for the pictures of the published persons.
+# Leave this line out when the publication has no pictures.
+private_files = "/srv/publication/private/files"
+
+# One folder per snapshot is made here, with the sealed file and its hand-off
+publications = "{folder}/publications"
+
+# The API key and secret of your publishing account on the site, as key:secret on one line.
+# The file must be readable by your account only: chmod 600
+token_file = "{folder}/ucm-token"
+
+# Optional: the data quality database the run's metrics are written to (see quality-db.json), and its table
+# quality_config = "{folder}/quality-db.json"
+# quality_table = "ucm_target_metric"
+
+# Optional: the certificate of a private authority that signed the site's certificate
+# ca_bundle = "{folder}/site-ca.pem"
+
+# Optional: records per batch and bytes per batch (the defaults are shown)
+# batch_size = 1000
+# batch_bytes = 4194304
+"""
+SOURCE_SAMPLE = {
+	"host": "publisher-db.example.org",
+	"port": 3306,
+	"user": "migration_reader",
+	"password": "<password of the read-only account>",
+	"database": "ucm_publication",
+}
+QUALITY_SAMPLE = {
+	"host": "quality-db.example.org",
+	"port": 3306,
+	"user": "migration_metrics",
+	"password": "<password of the metrics account>",
+	"database": "data_quality",
+}
+
+
+def samples(folder: str) -> dict[str, str]:
+	"""The three files of a publishing host, by name, for a host that keeps them in `folder`."""
+	return {
+		SETTINGS: SETTINGS_SAMPLE.format(folder=folder),
+		"source.json": json.dumps(SOURCE_SAMPLE, indent="\t") + "\n",
+		"quality-db.json": json.dumps(QUALITY_SAMPLE, indent="\t") + "\n",
+	}
 
 
 class Stop(SystemExit):
@@ -333,10 +394,48 @@ def seal_command(argv: list[str], terminal: bool) -> None:
 	args = parser.parse_args(argv)
 	conf, path = settings(args.config)
 	if path is None:
-		raise Stop(f"seal reads the host's settings: write {SETTINGS} (ucm-push --help-settings shows one)")
+		raise Stop(f"seal reads the host's settings: ucm-push init writes {SETTINGS} to fill in")
 	result = seal(conf, args.delegation, args.snapshot)
 	readable = args.text or (terminal and not args.json)
 	print(sealed_sentences(result) if readable else json.dumps(result))
+
+
+def init_command(argv: list[str], terminal: bool) -> None:
+	"""Write the host's files to fill in: the settings and the two database connections. A file that is there
+	is left as it is."""
+	parser = argparse.ArgumentParser(
+		prog="ucm-push init", description="Write the settings file and the two connection files, to fill in."
+	)
+	parser.add_argument("folder", nargs="?", default=".", help="Where to write them (default: here)")
+	parser.add_argument("--json", action="store_true", help="Answer in JSON")
+	parser.add_argument("--text", action="store_true", help="Answer in sentences")
+	args = parser.parse_args(argv)
+	folder = Path(args.folder).expanduser().resolve()
+	folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+	written, kept = [], []
+	for name, text in samples(str(folder)).items():
+		path = folder / name
+		if path.exists():
+			kept.append(name)
+			continue
+		# a connection file will hold a password: private from the moment it exists
+		path.touch(mode=0o600)
+		path.write_text(text)
+		written.append(name)
+	if not (args.text or (terminal and not args.json)):
+		print(json.dumps({"folder": str(folder), "written": written, "kept": kept}))
+		return
+	lines = [f"In {folder}:"]
+	lines += [f"  wrote {name}" for name in written]
+	lines += [f"  kept  {name} (it was there already)" for name in kept]
+	lines += [
+		"",
+		f"Fill them in: the site and its address in {SETTINGS}, the read-only account in source.json,",
+		"and the metrics account in quality-db.json if you write metrics to a database.",
+		f"Put your publishing account's key:secret in {folder / 'ucm-token'} and run: chmod 600 {folder / 'ucm-token'}",
+		"Then, from that folder: ucm-push seal CODE",
+	]
+	print("\n".join(lines))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -347,6 +446,9 @@ def main(argv: list[str] | None = None) -> None:
 	terminal = sys.stdout.isatty()
 	if argv[:1] == ["--help-settings"]:
 		print(__doc__)
+		return
+	if argv[:1] == ["init"]:
+		init_command(argv[1:], terminal)
 		return
 	if argv[:1] == ["seal"]:
 		seal_command(argv[1:], terminal)

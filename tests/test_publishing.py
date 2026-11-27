@@ -330,3 +330,42 @@ def test_seal_needs_the_hosts_settings(tmp_path, monkeypatch):
 def test_the_settings_file_is_explained(capsys):
 	publishing.main(["--help-settings"])
 	assert 'source_config = "/srv/migration/credentials/source.json"' in capsys.readouterr().out
+
+
+# --- the host's files -----------------------------------------------------------------------------------------
+
+
+def test_init_writes_the_three_files_private_and_keeps_what_is_there(tmp_path, capsys):
+	folder = tmp_path / "host"
+	publishing.main(["init", str(folder), "--json"])
+	told = json.loads(capsys.readouterr().out)
+	assert told["written"] == ["ucm-push.toml", "source.json", "quality-db.json"] and not told["kept"]
+	assert folder.stat().st_mode & 0o777 == 0o700
+	assert all((folder / name).stat().st_mode & 0o777 == 0o600 for name in told["written"])
+	(folder / "source.json").write_text('{"host": "mine"}')
+	publishing.main(["init", str(folder), "--text"])
+	assert "kept  source.json (it was there already)" in capsys.readouterr().out
+	assert json.loads((folder / "source.json").read_text()) == {"host": "mine"}
+
+
+def test_the_files_init_writes_can_be_read_as_settings(tmp_path):
+	import tomllib
+
+	folder = tmp_path / "host"
+	publishing.main(["init", str(folder), "--json"])
+	conf, path = publishing.settings(str(folder / "ucm-push.toml"))
+	assert path == folder / "ucm-push.toml"
+	assert conf["source_config"] == str(folder / "source.json")
+	assert conf["publications"] == str(folder / "publications")
+	assert "quality_config" not in conf  # optional settings are shown as comments
+	connection = json.loads((folder / "source.json").read_text())
+	assert set(connection) == {"host", "port", "user", "password", "database"}
+	assert connection["password"].startswith("<")  # a placeholder, never a password
+	assert tomllib.loads((folder / "ucm-push.toml").read_text()) == conf
+
+
+def test_the_repositorys_samples_are_the_files_init_writes():
+	"""samples/ shows the formats to who reads the repository: it cannot drift from what the command writes."""
+	shown = Path(__file__).resolve().parents[1] / "samples"
+	for name, text in publishing.samples("/srv/migration").items():
+		assert (shown / name).read_text() == text, name

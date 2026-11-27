@@ -150,8 +150,9 @@ def run(argv: list[str] | None = None, readable: bool = False):
 	parser = argparse.ArgumentParser(
 		prog="ucm-push",
 		description=__doc__,
-		epilog="Short commands: ucm-push seal CODE, then send, status and quality from the publication's "
-		"folder. ucm-push --help-settings shows the settings file they read.",
+		epilog="Short commands: ucm-push init writes the host's files to fill in; then ucm-push seal CODE, and "
+		"send, status and quality from the publication's folder. ucm-push --help-settings describes the "
+		"settings file.",
 	)
 	aliases = {"activity-order": "upload-order", "freeze": "prepare"}
 	parser.add_argument(
