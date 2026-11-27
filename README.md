@@ -240,8 +240,9 @@ Know these limits before choosing the route:
 
 - No controller runs for a copied row. A controller rule that is not in the verification's list is checked on the sampled records only.
 - A private picture keeps its published file name. The document routes may store the same bytes under another name.
-- Assignments and shares are released in one transaction at activation, as on the document routes. A delegation with very many of them has a long activation.
-- The route has been measured on one synthetic delegation of 243,000 rows without shares. Rehearse a delegation of the expected size, and one with shares, before relying on the figures.
+- Assignments and shares are released in one transaction at activation, as on the document routes. A delegation with 11,000 shares had an activation of about three minutes.
+- A share that UCM's current rules no longer allow stops the verification, with its batch and item in the finding. Correct the consent or the publication and resume.
+- The largest delegation loaded by this route had 1.25 million rows and reached **Publication ready** in 10.5 minutes on a development site with no caseworkers at work. Rehearse a delegation of the expected size, beside live use, before relying on the figures.
 
 ## Operating larger publications
 

@@ -263,7 +263,7 @@ For HTTPS delivery the operator registers the independently obtained run ID, pub
 
 ### Operating and cancelling a sealed publication
 
-On the Migration Run form, select **Apply hidden batches**, **Pause after current batch**, **Resume from last receipt**, **Activate delegation**, or **Discard run** as appropriate. The same commands are available through the existing operator API. Use a worker on the `ucm_migration` queue. The full-publication worker schedules up to 25 batches per queue job. Each business batch commits separately. Bounded requests retain an absolute stopping cursor on replay, and a newer command supersedes queued work at the next transaction boundary. The run becomes **Publication ready** after checking the source manifest, committed receipts, UCM option sets, context links, stored rows and deferred access inventory. The reviewer can download that reconciliation from Desk. Activation runs those checks again.
+On the Migration Run form, select **Apply hidden batches**, **Pause after current batch**, **Resume from last receipt**, **Activate delegation**, or **Discard run** as appropriate. The same commands are available through the existing operator API. Use a worker on the `ucm_migration` queue. The full-publication worker schedules up to 25 batches per queue job and starts no batch after the job's first 120 seconds, so that batches of a thousand records with pictures, which take close to a minute each, stay inside the queue's timeout. Each business batch commits separately. Bounded requests retain an absolute stopping cursor on replay, and a newer command supersedes queued work at the next transaction boundary. The run becomes **Publication ready** after checking the source manifest, committed receipts, UCM option sets, context links, stored rows and deferred access inventory. The reviewer can download that reconciliation from Desk. Activation runs those checks again.
 
 New publications include the MariaDB definitions for 21 owned tables. Previously staged 20-table runs retain their original receipts and scope. A new staging request requires a publication that includes organizations and the sensitive field policy. The signature ignores the order in which indexes were declared and the mutable AUTO_INCREMENT counter. It preserves the columns within each index. `publication_receiver.preflight(path, run)` reports schema differences, context existence and counts of target key collisions before staging. Before its first business write, the worker inventories all incoming identities and resolves references, including audit actors, against the target or the same publication.
 
@@ -337,11 +337,29 @@ No controller runs for a copied row. A rule of a controller that is not in `veri
 
 Both loads were compared row by row and field by field over every table of the publication. All 242,786 rows are on both sides and equal, except the file name of the 10,000 private pictures (`File.file_url` and `Person.person_picture`), which hold the same bytes. The row counts of all 504 tables of the site changed by the same amounts. The document route's own reconciliation of every record passed over the rows the set-based route had written (23.9 min).
 
-The delegation holds no shares, and no larger delegation has been loaded by this route.
+**A larger delegation, and shares.** Two delegations of the 50,000-person generator source were loaded on the same site through the bench's own worker, under keys of their own (see [Re-keyed generator sources](#re-keyed-generator-sources)). Each figure is one run.
+
+| | Small delegation | Large delegation |
+|---|---|---|
+| Published rows | 37,485 in 52 batches | 1,254,720 in 1,090 batches (1.48 GB sealed) |
+| Persons, activities, history rows | 250, 797, 2,096 | 50,000, 170,137, 445,382 |
+| Assignments and shares | 20 and 73 | 10 and 11,015 |
+| Write | 9 s | 331 s, of which 105 s for 5,701 sensitivity tags through the documents |
+| Derive | 5 s | 70 s (18,845 activities took their geography from their Place) |
+| Verify | 5 s | 218 s: every column of 1,243,695 rows, 242 rules, 21,400 records through the documents |
+| Request to **Publication ready** | 23 s | 10.5 min |
+| Activation | 2 s, committed | 167 s, rolled back |
+| Discard | not run | 371 s |
+
+The small delegation was activated through the queue while the other two delegations of the source were not live: its 20 assignments and its 13 closed shares were released, and its 60 open shares became held share receipts. The large delegation's activation then ran as one transaction of 167 s: 10 assignments and 4,169 shares released through their documents (3,308 to the delegation already live, 861 closed ones), 6,846 held for the delegation not yet live, and 35 of the small delegation's held shares released to it. It was rolled back, so the large delegation stayed hidden.
+
+The first attempt at the large delegation was stopped by the verification at batch 148: a sampled activity carried a list of tag codes that differed from the publication. The cause was in the re-keying tool, which had renamed a tag code but not its occurrences inside lists; the route itself behaved as intended, paused the run and named the batch and item. That load was discarded (the 371 s above) and a corrected copy loaded.
+
+Not covered: a share that UCM's current consent rules no longer allow (none occurred), a delegation larger than 1.25 million rows, and a load while caseworkers work in other delegations.
 
 `tests/set_based_comparison.py` makes this comparison: a row-by-row and field-by-field diff of every table of the publication, and the row count of every table of the site before and after. `tests/test_set_based.py` covers the parts that need no site.
 
-**Through the queue.** `tests/set_based_queue.py rehearse` stages a sealed file, chooses the route and runs the queue's jobs in its own process with a few seconds of budget a job. On the way it checks a pause for live load, a pause asked by the operator, a failure injected into the verification and the resume at the saved batch, the report, an activation refused after a receipt was changed, an activation timed and rolled back, and the discard over several jobs. The run ends discarded. `tests/set_based_queue.py worker` asks for the load as Desk and `ucm-push` do and follows the bench's own worker. `e2e/set_based_route.py` does the same in a browser: it chooses the route in the dialog, applies, and waits for **Publication ready**.
+**Through the queue.** `tests/set_based_queue.py` also has `worker`, `activate` (with `--dry-run` to roll back) and `discard`, which ask as Desk does and follow the bench's own worker. Its `rehearse` stages a sealed file, chooses the route and runs the queue's jobs in its own process with a few seconds of budget a job. On the way it checks a pause for live load, a pause asked by the operator, a failure injected into the verification and the resume at the saved batch, the report, an activation refused after a receipt was changed, an activation timed and rolled back, and the discard over several jobs. The run ends discarded. `tests/set_based_queue.py worker` asks for the load as Desk and `ucm-push` do and follows the bench's own worker. `e2e/set_based_route.py` does the same in a browser: it chooses the route in the dialog, applies, and waits for **Publication ready**.
 
 On the same delegation the rehearsal reached **Publication ready** in 134 s, pauses and the injected failure included, over 23 jobs of five seconds, and discarded it in 242 s over 33 jobs. Chosen and applied in Desk and carried by the bench's own worker, which serves every site of the development bench, the run was ready 4.0 min after its first receipt: 181 s of writing (36 s of them for 1,175 sensitivity tags through the documents), 13 s of deriving and 42 s of verifying.
 
@@ -349,3 +367,19 @@ On the same delegation the rehearsal reached **Publication ready** in 134 s, pau
 env/bin/python apps/ucm_migration_loader/tests/set_based_queue.py rehearse --site REHEARSAL_SITE --run RUN_DIGEST --publication /path/to/publication.sqlite
 env/bin/python apps/ucm_migration_loader/e2e/set_based_route.py --site REHEARSAL_SITE --run RUN_DIGEST
 ```
+
+### Re-keyed generator sources
+
+The generator computes its record keys from an entity code and a sequence number, so two sites it filled hold the same keys, and a delegation of one cannot be published to the other as it is. `tests/rekeyed_source.py` reads a generator source through a view that moves every key a delegation owns to a key space of its own and leaves the shared reference data (countries, areas, places, shared activity types) under the keys both sites know. Nothing is written to the source.
+
+```sh
+env/bin/python apps/ucm_migration_loader/tests/rekeyed_source.py plan --plan PLAN.json --source-site SOURCE_SITE --site TARGET_SITE --prefix W50
+env/bin/python apps/ucm_migration_loader/tests/rekeyed_source.py prepare --plan PLAN.json --commit
+env/bin/python apps/ucm_migration_loader/tests/rekeyed_source.py freeze --plan PLAN.json --context W50BOL --snapshot-id NEW_SNAPSHOT --publication /path/to/new.sqlite
+```
+
+- `plan` reads both sites and keeps what moves: the entity codes the delegations own, the few owned rows of catalogs that also hold shared rows, the shared sensitivity tags the two sites have under different keys, and the codes that must be unique on the target (context codes and local tag codes take the prefix).
+- `prepare` creates the source's contexts on the target, locked and hidden, each with the catalogs it owns. Without `--commit` it shows what it would create and rolls back.
+- `freeze` seals one delegation under its new keys. Check the file with `publication_receiver.preflight` before staging: `existing_keys` must be empty.
+
+`tests/test_rekeyed_source.py` covers the view without a site. The tool is for rehearsals with generator data only; a real publication carries the keys of its source system.
