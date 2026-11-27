@@ -5,7 +5,7 @@ Migrate one delegation from a published MariaDB snapshot into a shared UCM site.
 | Where | Component | Access it needs |
 |---|---|---|
 | Publishing host | Python CLI | Read-only MariaDB access to the final UCM-shaped publication, read access to published private files, and an HTTPS publishing credential |
-| Receiving site | Frappe app and migration worker | The site's existing database and private file storage. A System Manager approves transfers and controls apply, pause, discard and activation |
+| Receiving site | Frappe app and migration worker | The site's existing database and private file storage. A **Migration Admin** approves hand-offs and controls apply, pause, discard and activation. A System Manager reads the runs and gives that role |
 | Desk | UCM Migration Run, UCM Migration Batch, UCM Migration Held Share | Operators review progress, write routes, committed batches, reconciliation and historical shares |
 
 **Operating a migration?** The [user manual](docs/user-manual.html) takes the publishing operator, the site operator and the migration team through a delegation step by step, with pictures of every screen. Open the file in a browser. This README is the technical reference.
@@ -14,10 +14,12 @@ Migrate one delegation from a published MariaDB snapshot into a shared UCM site.
 
 ## Install
 
-**Publishing host.** Use Python 3.11 or newer. Install from an authorized checkout of this repository. The CLI works independently of Bench. The source database must already contain the mapped UCM tables with matching DDL.
+In the commands below, `https://github.com/ORGANISATION/REPOSITORY.git` stands for the address of your organisation's repository of the loader; you need read access to it. Whatever the repository is called, the app, and its folder in a bench, is `ucm_migration_loader`.
+
+**Publishing host.** Use Python 3.11 or newer. The CLI works independently of Bench. The source database must already contain the mapped UCM tables with matching DDL.
 
 ```sh
-git clone https://github.com/QuarkCyberSystems/ucm_migration_loader.git
+git clone https://github.com/ORGANISATION/REPOSITORY.git ucm_migration_loader
 cd ucm_migration_loader
 python3 -m venv .venv
 . .venv/bin/activate
@@ -25,13 +27,29 @@ python -m pip install .
 ucm-push --help
 ```
 
+To take a newer version later, from that folder:
+
+```sh
+git pull
+. .venv/bin/activate
+python -m pip install .
+```
+
 **Receiving host.** In a Frappe bench with UCM installed on the target site, install the app and sync its DocTypes. The full-publication cleanup implementation uses a Frappe 16.52.0 change. Review the [framework patch](dist/frappe-16.52.0-migration-cleanup.patch) and the [cleanup dependency](REHEARSALS.md#operating-and-cancelling-a-sealed-publication) before enabling discard on a new bench.
 
 ```sh
 export TARGET_SITE=ucm.example.org
-bench get-app https://github.com/QuarkCyberSystems/ucm_migration_loader.git
+bench get-app ucm_migration_loader https://github.com/ORGANISATION/REPOSITORY.git
 bench --site "$TARGET_SITE" install-app ucm_migration_loader
 bench --site "$TARGET_SITE" migrate
+```
+
+To take a newer version later, pull it, migrate, and restart every process of the bench, the workers included: a worker keeps the code it started with.
+
+```sh
+git -C apps/ucm_migration_loader pull
+bench --site "$TARGET_SITE" migrate
+bench restart        # or restart the bench's processes as this environment runs them
 ```
 
 Register the queue under the existing `workers` object in the bench's `sites/common_site_config.json`. Merge the following entry with any existing queues. Start the worker under the bench process manager used for this environment. For a foreground run:
@@ -48,7 +66,13 @@ bench worker --queue ucm_migration
 
 Both operators have a short form of their commands. It does what the detailed commands of the next section do, in fewer steps, and answers in sentences.
 
-**Publishing operator.** Write the host's settings once, as `ucm-push.toml` in the folder you work from (or name the file with `--config` or `UCM_PUSH_CONFIG`). It holds what is the same for every delegation, and names the private files that hold the password and the token.
+**Publishing operator.** `ucm-push init` writes the host's three files into the folder you name, private from the start, for you to fill in: the settings (`ucm-push.toml`) and the two database connections (`source.json`, `quality-db.json`). The [samples](samples/) folder shows the same files, with every key explained.
+
+```sh
+ucm-push init /srv/migration
+```
+
+The settings file holds what is the same for every delegation, and names the private files that hold the passwords and the token. It is read from the folder you work from, or from the file named with `--config` or `UCM_PUSH_CONFIG`.
 
 ```toml
 site = "ucm.example.org"                                    # the receiving site, as its bench names it
@@ -62,23 +86,52 @@ quality_config = "/etc/ucm-migration/quality-db.json"       # optional: the data
 
 ```sh
 ucm-push seal DEMO01                # by the delegation's code: inventory, sealed file and hand-off, in a new folder
-ucm-push send DEMO01-2026-11-27     # after the site operator's approval; run it again after an interruption
+ucm-push propose DEMO01-2026-11-27  # put the hand-off before the site's migration team, and get its check code
+ucm-push send DEMO01-2026-11-27     # after their approval; run it again after an interruption
 ucm-push status DEMO01-2026-11-27   # where the run stands on the site
 ucm-push quality DEMO01-2026-11-27  # the run's metrics, to metrics.csv in the folder and to the database named
 ```
 
+The two connection files are the arguments of one database connection each, as JSON. `source.json` is an account that only reads the publishing database; `quality-db.json` is an account that writes the metrics table. A server on the same host is named by `unix_socket` in place of `host` and `port`, and `ssl_ca` connects over TLS: see [samples/README.md](samples/README.md).
+
+```json
+{
+	"host": "publisher-db.example.org",
+	"port": 3306,
+	"user": "migration_reader",
+	"password": "<password of the read-only account>",
+	"database": "ucm_publication"
+}
+```
+
+`propose` sends the hand-off to the site, never the sealed file: the delegation, its row counts and the file's size and fingerprint. It shows in the Desk as a run that is **Proposed, to approve**, and the command answers with a check code, the first eight characters of the file's fingerprint:
+
+```text
+Proposed to the site as MIG-0070.
+Give the site's migration team this check code yourself: AE06-4673
+They type it to approve. When ucm-push status says Approved, send the file: ucm-push send
+```
+
+Tell the code to the person who approves, by a way that does not pass through the site: a call, a message. The site does not show it, so a proposal made with your token by someone else carries a code you never gave. The publishing account needs the **Migration Publisher** role to propose; without it, deliver `handoff.json` to the migration team instead.
+
 `seal` names the snapshot after the code and the date, and never reuses a name. The later commands take the snapshot's name, or nothing when run from inside its folder: the run is read from the hand-off there. `ucm-push sent` shows how far a transfer got. `ucm-push --help-settings` describes the settings file.
 
-**Site operator.** On the bench of the receiving site:
+**Site operator.** In the Desk, as a **Migration Admin**. The app brings two roles, which a System Manager gives: **Migration Admin** to the people who run migrations, and **Migration Publisher** to the publishing accounts that may propose their hand-offs. A System Manager without the Migration Admin role reads the runs and cannot act on them.
+
+1. Open **UCM Migration Run**. A proposed hand-off is a run that is **Proposed, to approve**: open it. Its form says which account proposed it and when, and nothing is accepted for it yet.
+2. Click **Approve hand-off**. The dialog shows the delegation, the snapshot, the rows, the file's size, the account that proposed, and whether the site has a context ready. Type the **Check code** the publishing operator told you, and click **Approve**. A code that does not match is refused. You cannot approve a proposal of your own account, nor one of a Migration Admin's. Where the site has no context for the delegation, the approval makes it, locked and hidden, under the published identifier, with the code and the name shown. **Migration → Decline** turns the proposal down.
+3. The publication is now a run that is **Waiting for the file**, and shows how much has arrived. When the whole file is there, the migration worker stages it by itself, in the name of the person who approved: the run becomes **Staged**, or **Refused** with the reason. **Migration → Stage now** asks for the staging again after a failure; **Withdraw approval** takes the approval back.
+
+A hand-off delivered as a file is approved from the same list: click **Approve a hand-off**, choose the `handoff.json`, check the fingerprint the dialog shows against the one you were given, choose the **Publishing account** that will send the file, and click **Approve**.
+
+From the bench, the same two steps, for a site without a browser at hand and for scripts:
 
 ```sh
 bench --site ucm.example.org ucm-migration approve /srv/approved/DEMO01/handoff.json --publisher publisher@example.org
 bench --site ucm.example.org ucm-migration stage /srv/approved/DEMO01/handoff.json
 ```
 
-`stage` says how it went: staged under a short ID, refused with the reason (the refused run is kept), or not arrived completely.
-
-**Sentences or JSON.** At a terminal the commands answer in sentences. Redirected or piped, they answer in JSON, as scripts expect; `--json` and `--text` choose outright. `tests/operator_flow.py` runs this whole way with the real commands over TLS.
+**Sentences or JSON.** At a terminal the commands answer in sentences. Redirected or piped, they answer in JSON, as scripts expect; `--json` and `--text` choose outright. `tests/operator_flow.py` runs this whole way with the real commands over TLS; with `--desk` the hand-off is proposed with `ucm-push propose`, approved in a browser with its check code (`e2e/site_operator.py`), and staged by the worker.
 
 ## Prepare and send a delegation
 
@@ -111,7 +164,7 @@ Provision UCM's shared dictionaries, referenced catalogs, historical users, sens
 
 ### 2. Inspect and prepare the publication on the publishing host
 
-`source.json` contains PyMySQL connection arguments for a read-only account. Store the actual credential outside the repo in a private file. A local MariaDB publisher can use `unix_socket` in place of the host and port.
+`source.json` contains PyMySQL connection arguments for a read-only account ([sample](samples/source.json), [every key explained](samples/README.md)). Store the actual credential outside the repo in a private file. A local MariaDB publisher can use `unix_socket` in place of the host and port.
 
 ```json
 {"host":"publisher.example.org","port":3306,"database":"ucm_publication","user":"migration_reader","password":"<read-only database password>"}
@@ -213,10 +266,10 @@ ucm-push quality "${remote[@]}" --quality-config /etc/ucm-migration/quality-db.j
 ucm-push quality "${remote[@]}" --quality-out "$RUN_ID-metrics.csv"
 ```
 
-- `--quality-config` is a private PyMySQL connection JSON, as `--source-config`. The rows go into the table `ucm_target_metric` (`--quality-table` names another; `--create-quality-table` creates it when it is absent). A run's rows replace the rows the same run left before, in one transaction, so the command can be repeated after every step.
+- `--quality-config` is a private PyMySQL connection JSON, as `--source-config` ([sample](samples/quality-db.json)). The rows go into the table `ucm_target_metric` (`--quality-table` names another; `--create-quality-table` creates it when it is absent). A run's rows replace the rows the same run left before, in one transaction, so the command can be repeated after every step.
 - `--quality-out` writes the same rows to a file: CSV for a `.csv` name, JSON otherwise. Both options can be given together.
 - The site then records on the run that the metrics were stored, by which account and where (the table's or the file's name, nothing else). The form shows it as the step **Hand over to data quality**. The record is refused when the run has changed since the metrics were read. A hand-over counts for the metrics the run holds at that moment: after a later step, such as the activation that releases the assignments and shares, the form shows the step as due again until the command is repeated.
-- The account that sent a run's sealed file may read the status, the report and the metrics of that run, and of no other. A System Manager's token works for every run.
+- The account that sent a run's sealed file may read the status, the report and the metrics of that run, and of no other. A Migration Admin's token works for every run.
 - Set `ucm_migration_quality_url` in the site config to a link containing `{run}` (and `{context}` where the dashboard needs it), and the form offers **Open in data quality dashboard**. A running site reads the setting within a minute.
 
 Each row carries the run, site, context, context code, snapshot, route, state and the time of the run's last change, then:
@@ -262,11 +315,13 @@ create table if not exists `ucm_target_metric` (
 
 ## All CLI commands
 
-These examples reuse the Bash arrays and variables from steps 2 and 3. For operator actions, run in a separate shell with the same target variables and a **System Manager's** token. Commands such as `apply` enqueue work. Poll `status` for the resulting state.
+These examples reuse the Bash arrays and variables from steps 2 and 3. For operator actions, run in a separate shell with the same target variables and a **Migration Admin's** token. Commands such as `apply` enqueue work. Poll `status` for the resulting state.
 
 | Command | What it does | Example |
 |---|---|---|
+| `init` | Short way: write the settings file and the two connection files, to fill in | `ucm-push init /srv/migration` |
 | `seal` | Short way: inventory, sealed file and hand-off for one delegation, by its code | `ucm-push seal DEMO01` |
+| `propose` | Short way: put a sealed publication's hand-off before the site's migration team, and print its check code | `ucm-push propose DEMO01-2026-11-27` |
 | `send`, `sent` | Short names of `send-publication` and `transfer-status` | `ucm-push send DEMO01-2026-11-27` |
 | `source-inventory` | Count source rows and identify unsupported business rows | `ucm-push source-inventory "${src[@]}"` |
 | `upload-order` | Preview activity dependency order and batch planning | `ucm-push upload-order "${src[@]}" --batch-size 1000` |
@@ -374,9 +429,9 @@ Three kinds, each run where it fits. Synthetic data only.
 | Rehearsals and browser tests | the other files of `tests/`, and `e2e/` | by hand, from the bench; see [REHEARSALS.md](REHEARSALS.md) | a development site that is being served, with a worker and generator data |
 
 - The unit tests cover what needs no site: the pilot contract, the sealed file's index, the set-based route's planning, the run's overview and metrics, `ucm-push quality` with the site's answers played back, and the short commands with their settings file.
-- The integration tests cover what the site decides: who may read a run and its metrics, the hand-over record, a sealed file that is refused for each reason and staged again afterwards, the account a transfer names, the list's columns, and what the form shows in every state. They build their own runs and a small sealed file by hand, roll everything back and remove the files they stage, so they can run on a site that holds loaded delegations. They do not load a delegation: a load commits, and is rehearsed instead.
+- The integration tests cover what the site decides: who may approve and act (the Migration Admin role), who may propose (the Migration Publisher role), the proposal with its check code, the approval of a hand-off with its context, the run that waits for its file and its staging on arrival, who may read a run and its metrics, the hand-over record, a sealed file that is refused for each reason and staged again afterwards, the account a transfer names, the list's columns, and what the form shows in every state. They build their own runs and a small sealed file by hand, roll everything back and remove the files they stage, so they can run on a site that holds loaded delegations. They do not load a delegation: a load commits, and is rehearsed instead.
 - The rehearsals load, verify, hand over, activate and discard real generator delegations through the bench's own worker, and the browser tests drive the Desk form through the same steps.
-- `e2e/manual_screenshots.py` takes the pictures of the user manual from runs in the situations it describes, into `docs/images/user-guide/`; the manual embeds them.
+- `e2e/manual_screenshots.py` takes the pictures of the user manual from runs in the situations it describes, into `docs/images/user-guide/`; `e2e/site_operator.py --shots` takes those of the approval. The manual embeds them.
 - `tests/set_based_kill.py` ends the job of a set-based load at seven points (inside a write transaction, between two, during the derive, the verification, the conclusion, the activation and the discard), by killing its process or cutting its database connection, and checks what is left and that the resumed load is the same as an undisturbed one.
 
 **When UCM changes a rule.** The set-based route states UCM's save rules again as queries, so a rule UCM adds or changes has to be followed. Two integration tests watch for it (`ucm_migration_loader/tests/test_rules_against_ucm.py`), and the CI runs them every night against UCM's develop branch:
