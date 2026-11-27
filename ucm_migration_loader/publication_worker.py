@@ -34,9 +34,9 @@ from .frozen import (
 from .history import insert_history
 from .persons import attach_picture_bytes, insert_prepared_person
 from .publication_receiver import (
+	check_same_target,
+	check_unchanged_site,
 	indexed_publication,
-	release_differences,
-	schema_differences,
 )
 from .publication_shares import check_share
 from .runs import check_closed, lock_run
@@ -312,10 +312,7 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadline
 	_, initial = lock_run(run)
 	refuse_set_based(initial)
 	with indexed_publication(run, initial) as (db, hashes, manifest, path, stamp):
-		if release_differences(manifest):
-			raise ValueError("Target application versions differ from the reviewed publication")
-		if schema_differences(manifest):
-			raise ValueError("Target schema differs from publication")
+		check_unchanged_site(manifest)
 		remaining = int(max_batches)
 		while remaining:
 			try:
@@ -326,12 +323,7 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadline
 					return runs.result(record)
 				if deadline is not None and monotonic() > deadline:
 					return runs.result(record)
-				if (manifest["site"], manifest["context"], manifest) != (
-					frappe.local.site,
-					ctx.name,
-					json.loads(record.manifest_json),
-				):
-					raise ValueError("Staged publication target differs")
+				check_same_target(manifest, ctx.name, record)
 				if record.state == constants.READY:
 					return {
 						**runs.result(record),
@@ -729,16 +721,8 @@ def _activate(run):
 	refuse_set_based(record)
 	with indexed_publication(run, record) as (db, hashes, manifest, path, stamp):
 		try:
-			if release_differences(manifest):
-				raise ValueError("Target application versions differ from the reviewed publication")
-			if schema_differences(manifest):
-				raise ValueError("Target schema differs from publication")
-			if (manifest["site"], manifest["context"], manifest) != (
-				frappe.local.site,
-				ctx.name,
-				json.loads(record.manifest_json),
-			):
-				raise ValueError("Staged publication target differs")
+			check_unchanged_site(manifest)
+			check_same_target(manifest, ctx.name, record)
 			if record.state == constants.ACTIVATED:
 				return runs.result(record)
 			if record.state not in (constants.READY, constants.APPLYING):

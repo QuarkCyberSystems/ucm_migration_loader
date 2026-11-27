@@ -308,12 +308,12 @@ def _prepare(args, site):
 		)
 
 
-def _for_this_site(args) -> dict:
+def _for_this_site(publication: Path, run: str, site: str) -> dict:
 	"""The manifest of the sealed file named, checked whole; refused where it was sealed for another site."""
 	from .frozen import verify_publication
 
-	manifest = verify_publication(args.publication, args.run)
-	if manifest["site"] != args.site:
+	manifest = verify_publication(publication, run)
+	if manifest["site"] != site:
 		raise ValueError("Publication targets another site")
 	return manifest
 
@@ -321,7 +321,7 @@ def _for_this_site(args) -> dict:
 def _check_publication(args, site):
 	from .frozen import hand_off
 
-	return hand_off(args.publication, args.run, _for_this_site(args))
+	return hand_off(args.publication, args.run, _for_this_site(args.publication, args.run, args.site))
 
 
 def _locate_item(args, site):
@@ -353,7 +353,7 @@ def _send_publication(args, site):
 	in hand: the site, the run, the fingerprint and the size it was approved with."""
 	from .frozen import file_identity
 
-	_for_this_site(args)
+	_for_this_site(args.publication, args.run, args.site)
 	checksum, size = file_identity(args.publication)
 	approved = (args.run, args.site, checksum, size)
 

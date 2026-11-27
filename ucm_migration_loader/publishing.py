@@ -477,6 +477,8 @@ def main(argv: list[str] | None = None) -> None:
 	argv, readable = fill(argv, terminal)
 	try:
 		push.run(argv, readable)
+	except FileExistsError as there:
+		raise Stop(f"Not done: {there} is there already, and a sealed file is never written twice") from None
 	except (ValueError, OSError) as refused:
 		# a refusal of the command or of a file it was given: a sentence for the operator, not a traceback
 		raise Stop(f"Not done: {refused}") from None

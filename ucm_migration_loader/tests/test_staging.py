@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import tempfile
+import uuid
 from unittest.mock import patch
 
 import frappe
@@ -153,8 +154,8 @@ class TestStaged(StagingCase):
 		result = publication_receiver.stage(path, run)
 		record = frappe.get_doc(constants.RUN, run)
 		self.assertEqual(result["state"], "Publication staged")
-		code = frappe.db.get_value("Context", self.context, "context_code")
-		self.assertEqual(record.delegation, f"Test {code[:-1] if code.endswith('0') else code} ({code})")
+		name, code = frappe.db.get_value("Context", self.context, ["context_name", "context_code"])
+		self.assertEqual(record.delegation, f"{name} ({code})")
 		self.assertEqual(record.write_route, "Document API")
 		timeline = json.loads(record.timeline_json)
 		self.assertEqual(timeline["stage"]["business_batches"], 1)
@@ -166,6 +167,32 @@ class TestStaged(StagingCase):
 		modified = frappe.db.get_value(constants.RUN, run, "modified")
 		self.assertEqual(publication_receiver.stage(path, run)["state"], "Publication staged")
 		self.assertEqual(frappe.db.get_value(constants.RUN, run, "modified"), modified)
+
+	def test_a_delegation_another_run_holds_is_not_staged_twice(self):
+		"""The staging refuses in the words the approval's dialog shows: both ask the same check."""
+		path, run = self.sealed()
+		held = publication_receiver.stage(path, run)
+		self.assertEqual(held["state"], "Publication staged")
+		number = frappe.db.get_value(constants.RUN, run, "display_id")
+		other_path, other = seal(
+			tempfile.mkdtemp(dir=self.directory), self.context, persons=[str(uuid.uuid4())]
+		)
+		self.addCleanup(remove_files, other)
+		other_path = str(other_path)
+		self.assertEqual(
+			publication_receiver.context_state(self.context, other)["problem"],
+			f"Run {number} already holds this delegation",
+		)
+		self.assertRaisesRegex(
+			ValueError,
+			f"Run {number} already holds this delegation",
+			publication_receiver.stage,
+			other_path,
+			other,
+		)
+		self.assertFalse(frappe.db.exists(constants.RUN, other))
+		# asked for the run that holds it, the same context is no obstacle
+		self.assertIsNone(publication_receiver.context_state(self.context, run)["problem"])
 
 	def test_the_site_setting_chooses_the_route_of_a_staged_run(self):
 		path, run = self.sealed()

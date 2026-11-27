@@ -9,7 +9,8 @@ from frappe import _
 
 from . import constants, runs
 from .contract import check_code, digest, encoded
-from .frozen import FORMAT, ORDER, selection
+from .frozen import FORMAT
+from .publication_receiver import context_state
 from .publication_transport import approve as bind
 from .publication_transport import folder, progress, receive
 from .ucm_migration_loader import run_overview
@@ -34,42 +35,18 @@ def _reviewed(handoff: dict) -> tuple[str, dict, str, int, dict]:
 	return run, manifest, sha, size, about
 
 
-def context_state(context: str, run: str | None = None) -> dict:
-	"""Whether a delegation's context can receive a publication: it exists, is locked and hidden, holds no record
-	of the publication's tables, and no other run holds it."""
-	found = frappe.db.get_value(
-		"Context",
-		context,
-		["context_code", "context_name", "context_status", "context_discoverability"],
-		as_dict=True,
-	)
-	if not found:
-		return {"exists": False, "problem": None}
-	out = {"exists": True, "code": found.context_code, "name": found.context_name, "problem": None}
-	other = frappe.db.get_value(
-		constants.RUN,
-		{
-			"context_id": context,
-			# a proposal holds nothing: several may wait for one delegation, and one is approved
-			"state": ["not in", (constants.DISCARDED, constants.REJECTED, constants.PROPOSED)],
-			"name": ["!=", run or ""],
-		},
-		"display_id",
-	)
-	if (found.context_status, found.context_discoverability) != ("Locked", "Hidden"):
-		out["problem"] = _("The delegation's context is not locked and hidden")
-	elif other:
-		out["problem"] = _("Run {0} already holds this delegation").format(other)
-	else:
-		for doctype in ORDER:
-			where = selection(doctype)
-			# nosemgrep: frappe-semgrep-rules.rules.security.frappe-sql-format-injection -- reviewed: the DocType is one of ORDER and the condition is built by selection() from constants; the context is a parameter
-			if frappe.db.sql(
-				f"select 1 from `tab{doctype}` r {where} limit 1", (context,) * where.count("%s")
-			):
-				out["problem"] = _("The delegation's context already holds {0} records").format(_(doctype))
-				break
-	return out
+def _summary(run: str, manifest: dict, size, about: dict) -> dict:
+	"""What a hand-off says of its publication, and whether the site can receive it. The same for a hand-off read
+	from its file and for a proposed one."""
+	return {
+		"run": run,
+		"snapshot": manifest["snapshot"],
+		"rows": sum(manifest["counts"].values()),
+		"batches": manifest["batches"],
+		"bytes": size,
+		"delegation": about or {},
+		"context": {"id": manifest["context"], **context_state(manifest["context"], run)},
+	}
 
 
 def inspect_handoff(handoff: dict) -> dict:
@@ -77,18 +54,7 @@ def inspect_handoff(handoff: dict) -> dict:
 	runs.only_admin()
 	run, manifest, sha, size, about = _reviewed(handoff)
 	known = frappe.db.get_value(constants.RUN, run, ["display_id", "state"], as_dict=True)
-	return {
-		"run": run,
-		"snapshot": manifest["snapshot"],
-		"rows": sum(manifest["counts"].values()),
-		"batches": manifest["batches"],
-		"counts": {table: rows for table, rows in manifest["counts"].items() if rows},
-		"bytes": size,
-		"sha256": sha,
-		"delegation": about,
-		"context": {"id": manifest["context"], **context_state(manifest["context"], run)},
-		"known": known,
-	}
+	return {**_summary(run, manifest, size, about), "sha256": sha, "known": known}
 
 
 def _prepare_context(context: str, run: str, code: str | None, name: str | None) -> bool:
@@ -251,17 +217,9 @@ def inspect_proposed(run: str) -> dict:
 	runs.only_admin()
 	record, manifest, proposal = _proposed(run)
 	return {
-		"run": run,
+		**_summary(run, manifest, proposal.get("size"), proposal.get("delegation")),
 		"display_id": record.display_id,
-		"snapshot": manifest["snapshot"],
-		"rows": sum(manifest["counts"].values()),
-		"batches": manifest["batches"],
-		"counts": {table: rows for table, rows in manifest["counts"].items() if rows},
-		"bytes": proposal.get("size"),
-		"delegation": proposal.get("delegation") or {},
-		"context": {"id": manifest["context"], **context_state(manifest["context"], run)},
 		"proposed_by": proposal.get("proposed_by"),
-		"proposed_on": proposal.get("proposed_on"),
 	}
 
 

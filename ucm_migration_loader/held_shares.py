@@ -1,9 +1,7 @@
 """Keep historical shares private until the receiving delegation's release transaction."""
 
 import json
-import sqlite3
 from collections import Counter
-from contextlib import closing
 from hashlib import sha256
 from itertools import groupby
 from operator import attrgetter
@@ -13,8 +11,8 @@ import frappe
 from . import constants, runs
 from .constants import HELD
 from .contract import digest
-from .frozen import FORMAT, reference_digest
-from .publication_receiver import local_publication
+from .frozen import FORMAT, open_sealed, reference_digest
+from .publication_receiver import local_publication, same_target
 from .publication_shares import IneligibleShare, check_share
 
 
@@ -64,10 +62,7 @@ def release_incoming(ctx, receiving_run):
 		source = runs.record(run)
 		if source.state != constants.ACTIVATED:
 			raise ValueError("Held share source run has not been activated")
-		uri = local_publication(run).resolve(strict=True).as_uri() + "?mode=ro"
-		with closing(sqlite3.connect(uri, uri=True)) as db:
-			db.execute("pragma trusted_schema=OFF")
-			db.execute("begin")
+		with open_sealed(local_publication(run)) as db:
 			(descriptor,) = db.execute("select manifest from descriptor").fetchall()
 			manifest = json.loads(descriptor[0])
 			# Only these recorded share batches are consumed. Their target receipts were
@@ -78,11 +73,7 @@ def release_incoming(ctx, receiving_run):
 				or reference_digest(db) != manifest["reference_sha256"]
 			):
 				raise ValueError("Held share source descriptor or reference identities differ")
-			if (manifest["site"], manifest["context"], manifest) != (
-				frappe.local.site,
-				source.context_id,
-				json.loads(source.manifest_json),
-			):
+			if not same_target(manifest, source.context_id, source):
 				raise ValueError("Held share source manifest differs")
 			cache = {}
 			for seq, batch_entries in groupby(entries, key=attrgetter("sequence_number")):

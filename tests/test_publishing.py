@@ -547,3 +547,12 @@ def test_a_refusal_without_a_message_names_its_status(host, monkeypatch):
 	monkeypatch.setattr(push.requests, "Session", Session)
 	with pytest.raises(SystemExit, match=r"status returned HTTP 403\. Check the run"):
 		publishing.main(["status", "DEMO01-2026-01-02", "--json"])
+
+
+def test_a_file_that_is_there_already_is_said_so(host, monkeypatch):
+	def refuse(argv, readable):
+		raise FileExistsError(host / "d.sqlite")
+
+	monkeypatch.setattr(push, "run", refuse)
+	with pytest.raises(publishing.Stop, match=r"d\.sqlite is there already"):
+		publishing.main(["prepare", "--site", "target.example"])

@@ -444,6 +444,18 @@ def freeze(
 
 
 @contextmanager
+def open_sealed(path, *, immutable=False, one_view=True):
+	"""A sealed file, opened to be read and nothing else. `immutable`: the site's own staged copy, which nothing
+	writes any more. `one_view`: every read sees the file as it was at the first."""
+	uri = Path(path).resolve(strict=True).as_uri() + "?mode=ro" + ("&immutable=1" if immutable else "")
+	with closing(sqlite3.connect(uri, uri=True)) as db:
+		db.execute("pragma trusted_schema=OFF")
+		if one_view:
+			db.execute("begin")
+		yield db
+
+
+@contextmanager
 def source_snapshot(config):
 	"""One unchanging view of the publishing database, for everything a sealing reads. `config`: the private file
 	of the read-only connection."""
@@ -470,19 +482,13 @@ def hand_off(path, run, manifest, delegation=None) -> dict:
 
 def verify_publication(path, run):
 	"""Read a consistent view of the sealed publication and compare it to a separately retained run ID."""
-	uri = path.resolve(strict=True).as_uri() + "?mode=ro"
-	with closing(sqlite3.connect(uri, uri=True)) as db:
-		db.execute("pragma trusted_schema=OFF")
-		db.execute("begin")
+	with open_sealed(path) as db:
 		return verify_connection(db, run)
 
 
 def locate_item(path, run, site, sequence, position):
 	"""Resolve a recorded failure location to a published key in one verified read."""
-	uri = path.resolve(strict=True).as_uri() + "?mode=ro"
-	with closing(sqlite3.connect(uri, uri=True)) as db:
-		db.execute("pragma trusted_schema=OFF")
-		db.execute("begin")
+	with open_sealed(path) as db:
 		manifest = verify_connection(db, run)
 		if manifest["site"] != site:
 			raise ValueError("Publication targets another site")

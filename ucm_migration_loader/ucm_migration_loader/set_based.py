@@ -51,10 +51,10 @@ from ucm_migration_loader.constants import (
 )
 from ucm_migration_loader.frozen import CHILDREN, LOOKUPS, ORDER, selection
 from ucm_migration_loader.publication_receiver import (
+	check_same_target,
+	check_unchanged_site,
 	indexed_publication,
-	release_differences,
 	remove_after_discard,
-	schema_differences,
 )
 from ucm_migration_loader.runs import check_closed, lock_run
 
@@ -97,22 +97,10 @@ def _publication(run: str):
 	"""The run's staged file, opened for one step, on a target that still is the one it was reviewed for."""
 	_ctx, record = lock_run(run)
 	with indexed_publication(run, record) as (db, hashes, manifest, path, stamp):
-		if release_differences(manifest):
-			raise ValueError(_("Target application versions differ from the reviewed publication"))
-		if schema_differences(manifest):
-			raise ValueError(_("Target schema differs from publication"))
+		check_unchanged_site(manifest)
 		# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: frees the run for a pause before a long read; nothing is pending but the index stamp of a publication staged before the index existed
 		frappe.db.commit()
 		yield _Sealed(db, hashes, manifest, path, stamp)
-
-
-def _same_target(manifest: dict, ctx, record) -> None:
-	if (manifest["site"], manifest["context"], manifest) != (
-		frappe.local.site,
-		ctx.name,
-		json.loads(record.manifest_json),
-	):
-		raise ValueError(_("Staged publication target differs"))
 
 
 @contextmanager
@@ -403,7 +391,7 @@ def _write(
 	for doctype, group in _groups(sealed.batches(start, upto)):
 		try:
 			ctx, record = lock_run(run)
-			_same_target(sealed.manifest, ctx, record)
+			check_same_target(sealed.manifest, ctx.name, record)
 			if (
 				not _mine(record, ticket)
 				or (record.applied or 0) != group[0][0] - 1
@@ -938,7 +926,7 @@ def _conclude(run: str, sealed: _Sealed, last: int, *, ticket: int | None = None
 	if not _mine(record, ticket):
 		return None
 	manifest, context, seconds = sealed.manifest, ctx.name, {}
-	_same_target(manifest, ctx, record)
+	check_same_target(manifest, ctx.name, record)
 
 	def timed(step, call):
 		at = monotonic()
@@ -1121,7 +1109,7 @@ def activate(run: str, commit: bool = True) -> dict:
 			manifest = sealed.manifest
 			held_shares.lock_activation()
 			ctx, record = lock_run(run)
-			_same_target(manifest, ctx, record)
+			check_same_target(manifest, ctx.name, record)
 			report = json.loads(record.reconciliation_json or "{}")
 			if record.state != READY or report.get("route") != SET_BASED or report.get("findings"):
 				raise ValueError(_("Activation follows a verification that found nothing"))

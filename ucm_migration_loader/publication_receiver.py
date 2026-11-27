@@ -4,14 +4,14 @@ import json
 import os
 import re
 import shutil
-import sqlite3
 import tempfile
 from collections import Counter, defaultdict
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 from time import monotonic
 
 import frappe
+from frappe import _
 
 from . import constants, publication_index, runs
 from .contract import encoded, table_signatures
@@ -20,6 +20,7 @@ from .frozen import (
 	ORDER,
 	TABLES,
 	application_versions,
+	open_sealed,
 	selection,
 	verify_connection,
 	verify_publication,
@@ -71,10 +72,7 @@ def release_differences(manifest):
 def preflight(path: str, run: str):
 	"""Read-only inventory. Report counts without exposing record IDs or field values."""
 	runs.only_admin()
-	uri = Path(path).resolve(strict=True).as_uri() + "?mode=ro"
-	with closing(sqlite3.connect(uri, uri=True)) as db:
-		db.execute("pragma trusted_schema=OFF")
-		db.execute("begin")
+	with open_sealed(path) as db:
 		manifest = verify_connection(db, run)
 		return _inventory(db, run, manifest)
 
@@ -120,6 +118,67 @@ REFUSALS = (
 	("existing_keys", "record IDs are already on this site"),
 	("existing_share_receipts", "share receipts are already kept"),
 )
+
+
+def check_unchanged_site(manifest) -> None:
+	"""The site still is the one the publication was reviewed for: the same application versions and the same
+	tables. Asked again before every step that writes."""
+	if release_differences(manifest):
+		raise ValueError(_("Target application versions differ from the reviewed publication"))
+	if schema_differences(manifest):
+		raise ValueError(_("Target schema differs from publication"))
+
+
+def same_target(manifest, context, record) -> bool:
+	"""Whether a staged file is the one this run was staged with, for this site and this delegation."""
+	return (manifest["site"], manifest["context"], manifest) == (
+		frappe.local.site,
+		context,
+		json.loads(record.manifest_json),
+	)
+
+
+def check_same_target(manifest, context, record) -> None:
+	if not same_target(manifest, context, record):
+		raise ValueError(_("Staged publication target differs"))
+
+
+def context_state(context: str, run: str | None = None) -> dict:
+	"""Whether a delegation's context can receive a publication: it exists, is locked and hidden, holds no record
+	of the publication's tables, and no other run holds it."""
+	found = frappe.db.get_value(
+		"Context",
+		context,
+		["context_code", "context_name", "context_status", "context_discoverability"],
+		as_dict=True,
+	)
+	if not found:
+		return {"exists": False, "problem": None}
+	out = {"exists": True, "code": found.context_code, "name": found.context_name, "problem": None}
+	other = frappe.db.get_value(
+		constants.RUN,
+		{
+			"context_id": context,
+			# a proposal holds nothing: several may wait for one delegation, and one is approved
+			"state": ["not in", (constants.DISCARDED, constants.REJECTED, constants.PROPOSED)],
+			"name": ["!=", run or ""],
+		},
+		"display_id",
+	)
+	if (found.context_status, found.context_discoverability) != ("Locked", "Hidden"):
+		out["problem"] = _("The delegation's context is not locked and hidden")
+	elif other:
+		out["problem"] = _("Run {0} already holds this delegation").format(other)
+	else:
+		for doctype in ORDER:
+			where = selection(doctype)
+			# nosemgrep: frappe-semgrep-rules.rules.security.frappe-sql-format-injection -- reviewed: the DocType is one of ORDER and the condition is built by selection() from constants; the context is a parameter
+			if frappe.db.sql(
+				f"select 1 from `tab{doctype}` r {where} limit 1", (context,) * where.count("%s")
+			):
+				out["problem"] = _("The delegation's context already holds {0} records").format(_(doctype))
+				break
+	return out
 
 
 def _staged_before(run, manifest, dest):
@@ -199,8 +258,7 @@ def stage(path: str, run: str):
 			raise ValueError(
 				"Freeze a new publication including organizations and the sensitive field policy"
 			)
-		with closing(sqlite3.connect(proposed.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
-			db.execute("pragma trusted_schema=OFF")
+		with open_sealed(proposed, immutable=True, one_view=False) as db:
 			inventory = _inventory(db, run, manifest)
 		if inventory["schema_differences"] is None:
 			raise ValueError("Create a new sealed publication with the publisher schema receipt")
@@ -216,25 +274,9 @@ def stage(path: str, run: str):
 
 		ctx = frappe.get_doc("Context", context, for_update=True)
 		check_closed(ctx)
-		for dt in ORDER:
-			where = selection(dt)
-			# nosemgrep: frappe-semgrep-rules.rules.security.frappe-sql-format-injection -- reviewed: the DocType is one of ORDER and the condition is built by selection() from constants; the context is a parameter
-			if frappe.db.sql(
-				f"select 1 from `tab{dt}` r {where} limit 1",
-				(context,) * where.count("%s"),
-			):
-				raise ValueError(f"Incoming delegation already contains {dt} records")
-		if frappe.db.get_value(
-			constants.RUN,
-			{
-				"context_id": context,
-				"state": ["not in", (constants.DISCARDED, constants.REJECTED, constants.PROPOSED)],
-				"name": ["!=", run],
-			},
-			"name",
-			for_update=True,
-		):
-			raise ValueError("Another run already owns this context")
+		# a refusal the approval's dialog showed in the same words; the context is locked from here on
+		if problem := context_state(context, run)["problem"]:
+			raise ValueError(problem)
 		if dest.exists():
 			# A previous process may have died after the link and before database commit.
 			verify_publication(dest, run)
@@ -249,8 +291,7 @@ def stage(path: str, run: str):
 		from .ucm_migration_loader.set_based import _business_batches
 		from .write_routes import default_plan
 
-		with closing(sqlite3.connect(dest.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
-			db.execute("pragma trusted_schema=OFF")
+		with open_sealed(dest, immutable=True, one_view=False) as db:
 			stamp = publication_index.build_index(db, dest, manifest)
 			business = _business_batches(db)
 		record = _keep_run(
@@ -283,10 +324,7 @@ def indexed_publication(run, initial):
 	if stamp:
 		publication_index.check_identity(path, stamp)
 	opened_identity = publication_index.identity(path)
-	uri = path.as_uri() + "?mode=ro&immutable=1"
-	with closing(sqlite3.connect(uri, uri=True)) as db:
-		db.execute("pragma trusted_schema=OFF")
-		db.execute("begin")
+	with open_sealed(path, immutable=True) as db:
 		manifest = json.loads(initial.manifest_json)
 		if not stamp:
 			# Legacy publications get a trusted index only after full verification.
@@ -312,9 +350,7 @@ def rebuild_index(run: str):
 	_, record = lock_run(run)
 	path = local_publication(run).resolve(strict=True)
 	original = publication_index.identity(path)
-	with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
-		db.execute("pragma trusted_schema=OFF")
-		db.execute("begin")
+	with open_sealed(path, immutable=True) as db:
 		manifest = verify_connection(db, run)
 		if manifest != json.loads(record.manifest_json) or manifest["site"] != frappe.local.site:
 			raise ValueError("Publication differs from the staged run")

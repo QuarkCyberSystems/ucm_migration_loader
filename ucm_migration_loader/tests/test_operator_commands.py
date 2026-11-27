@@ -64,7 +64,7 @@ class TestApproval(OperatorCase):
 		found = operator.inspect_handoff(handoff)
 		self.assertEqual((found["run"], found["rows"], found["batches"]), (run, 1, 1))
 		self.assertEqual((found["bytes"], found["snapshot"]), (path.stat().st_size, "TEST-1"))
-		self.assertEqual(found["counts"], {"Person": 1})
+		self.assertNotIn("counts", found)  # the dialog shows the total, not the tables
 		self.assertEqual(found["context"]["id"], self.context)
 		self.assertTrue(found["context"]["exists"])
 		self.assertIsNone(found["context"]["problem"])

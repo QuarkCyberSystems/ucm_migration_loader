@@ -10,7 +10,7 @@ import frappe
 
 from . import constants, publication_index, runs
 from .frozen import ORDER
-from .publication_receiver import indexed_publication, remove_after_discard
+from .publication_receiver import check_same_target, indexed_publication, remove_after_discard
 from .publication_worker import audit_values
 from .runs import check_closed, lock_run
 from .stored_rows import checked_row
@@ -128,12 +128,7 @@ def discard(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadli
 	):
 		raise ValueError("Only a hidden full publication can be discarded")
 	with indexed_publication(run, record) as (db, hashes, manifest, path, stamp):
-		if (manifest["site"], manifest["context"], manifest) != (
-			frappe.local.site,
-			ctx.name,
-			json.loads(record.manifest_json),
-		):
-			raise ValueError("Staged publication target differs")
+		check_same_target(manifest, ctx.name, record)
 		for _ in range(int(max_batches)):
 			try:
 				ctx, record = lock_run(run)
