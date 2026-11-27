@@ -136,7 +136,23 @@ def hand_over_quality(call, args):
 
 
 def main():
-	parser = argparse.ArgumentParser(description=__doc__)
+	"""`ucm-push`. The short commands and the settings file are in `publishing`, which completes a command and
+	hands it to `run`."""
+	from . import publishing
+
+	publishing.main()
+
+
+def run(argv: list[str] | None = None, readable: bool = False):
+	"""One detailed command, every value an option. `readable`: answer in sentences where the command has some."""
+	from .publishing import show
+
+	parser = argparse.ArgumentParser(
+		prog="ucm-push",
+		description=__doc__,
+		epilog="Short commands: ucm-push seal CODE, then send, status and quality from the publication's "
+		"folder. ucm-push --help-settings shows the settings file they read.",
+	)
 	aliases = {"activity-order": "upload-order", "freeze": "prepare"}
 	parser.add_argument(
 		"action",
@@ -219,7 +235,7 @@ def main():
 		action="store_true",
 		help="Create the metrics table when it is absent",
 	)
-	args = parser.parse_args()
+	args = parser.parse_args(argv)
 	if (args.action == "quality") != bool(args.quality_out or args.quality_config):
 		parser.error("Use --quality-out or --quality-config with quality")
 	if (args.quality_table or args.create_quality_table) and not args.quality_config:
@@ -308,7 +324,7 @@ def main():
 		receipt = call("status", run=args.run)
 		if (receipt["site"], receipt["run"]) != (args.site, args.run):
 			raise ValueError("Target transfer approval differs")
-		print(json.dumps(receipt))
+		show(args.action, receipt, readable)
 		return
 
 	if args.action == "send-publication":
@@ -368,7 +384,7 @@ def main():
 						flush=True,
 					)
 				count += 1
-		print(json.dumps(receipt))
+		show(args.action, receipt, readable)
 		return
 
 	if args.action in (
@@ -515,7 +531,7 @@ def main():
 			parser.error("Supply --run")
 		options = {"max_batches": args.max_batches} if args.action == "apply" and args.max_batches else {}
 		result = call(args.action, run=args.run, **options)
-	print(json.dumps(result))
+	show(args.action, result, readable)
 
 
 if __name__ == "__main__":
