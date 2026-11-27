@@ -395,6 +395,55 @@ env/bin/python apps/ucm_migration_loader/tests/set_based_queue.py rehearse --sit
 env/bin/python apps/ucm_migration_loader/e2e/set_based_route.py --site REHEARSAL_SITE --run RUN_DIGEST
 ```
 
+**The run's screens and the metrics hand-over.** `tests/test_run_overview.py` checks without a site what the form and the hand-over are built from: the steps a run's records give in every state, the rows on both sides, the findings with their severity, the metric rows, and the writer of the metrics table. Two scripts check the rest on a rehearsal site that is being served:
+
+```sh
+# a load whose hidden rows are changed behind the loader must pause with exactly those findings
+env/bin/python apps/ucm_migration_loader/tests/run_overview_site.py findings --site "$TARGET_SITE" --run "$RUN_ID" --publication "$PUBLICATION"
+# a file whose record IDs are already on the site is refused, and the refusal is kept as a run
+env/bin/python apps/ucm_migration_loader/tests/run_overview_site.py refused --site "$TARGET_SITE" --run "$OTHER_RUN_ID" --publication "$OTHER_PUBLICATION"
+# ucm-push quality over TLS, with a publishing account made for the test, into a file and a stand-in table
+env/bin/python apps/ucm_migration_loader/tests/run_overview_site.py handover --site "$TARGET_SITE" --run "$RUN_ID" --quality-config quality-db.json
+# the list and the three forms in a browser (Playwright and Chromium)
+env/bin/python apps/ucm_migration_loader/e2e/run_overview.py --site "$TARGET_SITE" --ready "$READY_RUN" --findings "$RUN_ID" --refused "$OTHER_RUN_ID"
+```
+
+`findings` changes one text, three option values and two defaults and removes one child row with direct SQL, after the delegation is written and derived. It avoids the records the verification passes through the documents, because a sampled record that differs stops the verification at that record, which is another path. `handover` needs a MariaDB database standing in for the data quality database; its table must be named `..._rehearsal` and is dropped at the end.
+
+On the 10,000-person delegation (242,856 rows), on the development site, one run each:
+
+| Situation | Result |
+|---|---|
+| Rows changed behind the loader | The verification paused the run with seven findings and no other: three fields that differ (with batch and item), one child row missing by count and by key, one option value outside its list (HIGH), one default left empty (MEDIUM). 71 metric rows, 11 of them failing. |
+| Hand-over of that run | `ucm-push quality` wrote the 71 rows to a CSV file and to the stand-in table, a second call left 71 rows, the run showed the step as done with the account and the table's name, and the run's own time and metrics did not change. A second publishing account was answered HTTP 403. |
+| A file sealed from the same delegation while it was loaded | Refused after 10 s: 242,786 record IDs already on the site in 18 tables. A **Refused** run was kept, with no file and no receipt. |
+| The refused file staged again after the discard | Checked from the start and staged in the same run, loaded by the bench's own worker and ready after 123 s; 69 metric rows, none failing. |
+| In the browser | The list, the form waiting for the decision, the form with findings and the refused form showed these runs, without a page error. |
+
+The times a step list shows are kept from staging onwards by this version; a run staged before it shows its batches' times and no staging time.
+
+**Loading and activating from the form, on both routes.** `run_overview_site.py` also checks a run that came across whole and an activated one, and `e2e/run_overview.py` acts on the form: it asks for the load or takes the go-live decision, then leaves the page alone and waits for the form to show the result by itself.
+
+```sh
+env/bin/python apps/ucm_migration_loader/tests/run_overview_site.py ready --site "$TARGET_SITE" --run "$RUN_ID"
+env/bin/python apps/ucm_migration_loader/tests/run_overview_site.py activated --site "$TARGET_SITE" --run "$RUN_ID"
+env/bin/python apps/ucm_migration_loader/e2e/run_overview.py --site "$TARGET_SITE" --load "$STAGED_RUN" --dashboard "$READY_RUN" --activate "$READY_RUN" --activated "$ACTIVATED_RUN"
+```
+
+On three small generator delegations of the development site, one run each. The times of delegations this small say nothing of a route's speed; the larger measurements are above.
+
+| Situation | Result |
+|---|---|
+| Route dialog, 3 persons (`e2e/set_based_route.py`) | The staged run was given the set-based route in the dialog, applied from the form and ready 5 s later. |
+| Go-live decision on the form, same run | **Activate delegation** was confirmed on the form; the form showed the open delegation by itself once the worker had finished, without the page being loaded again. The step list shows who activated, when, and the 0.3 s it took; the context is Active. |
+| Hand-over before and after that activation | Done before (52 rows); shown as due again after the activation, whose metrics count the access rows (55 rows); done again after a second `ucm-push quality`. A second account was answered HTTP 403 both times. |
+| Document route, 1,000 persons (2,000 rows), staged by this version | Applied from the form, which showed the steps and the result by itself. Stage 0.5 s, write 10.7 s, verify 3.7 s; no derive step; 48 metric rows, none failing, without the set-based checks. Handed over, then activated through the worker: 0.4 s, recorded on the run. |
+| Dashboard link | With `ucm_migration_quality_url` set, the form offered the link with the run and the context in it within a minute, and no longer after the setting was removed. |
+| An activated delegation with shares (W50BOL, activated earlier) | Its form shows 20 assignments and 13 shares released and 60 shares held; released plus held equals published in the records and in the metrics. It was activated before this version kept the activation's time, so its step shows none. |
+| Both routes again after the lint changes to the load code | A 1,000-person delegation each: the document route loaded and verified in 20 s of work, followed on the form's own refresh; the set-based route ready through the worker; the discards of the two earlier runs left no row. |
+
+A discard of a 1,000-person document-route run took 29 to 39 s through the worker. Runs loaded before the batch receipts kept their rows and times show their batches only.
+
 ### Re-keyed generator sources
 
 The generator computes its record keys from an entity code and a sequence number, so two sites it filled hold the same keys, and a delegation of one cannot be published to the other as it is. `tests/rekeyed_source.py` reads a generator source through a view that moves every key a delegation owns to a key space of its own and leaves the shared reference data (countries, areas, places, shared activity types) under the keys both sites know. Nothing is written to the source.
