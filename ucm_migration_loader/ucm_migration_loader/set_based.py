@@ -47,6 +47,8 @@ from ucm_migration_loader.publication_receiver import (
 	schema_differences,
 )
 
+from . import run_overview
+
 ROUTE = "Set-based SQL"
 DOCUMENT = "Document API"
 # Their rules read clearances, consent and other delegations: written through the documents on every route
@@ -953,6 +955,7 @@ def _conclude(run: str, sealed: _Sealed, last: int, *, ticket: int | None = None
 		"stored_rows": counted,
 		"rows_compared": tally["rows_compared"],
 		"derived_rows_changed": progress.get("derived"),
+		"derive_seconds": progress.get("derive_seconds"),
 		"place_fields_completed": tally["place_fields_completed"],
 		"rules_checked": rules["rules_checked"],
 		"sampled_document_checks": tally["records_sampled"],
@@ -979,6 +982,7 @@ def _conclude(run: str, sealed: _Sealed, last: int, *, ticket: int | None = None
 		)
 	else:
 		_mark(run, "Ready for activation", state=READY, reconciliation_json=json.dumps(report), finding=None)
+	run_overview.refresh(run)
 	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the verification report and the run's state, kept whether or not it passed
 	frappe.db.commit()
 	return {**report, "state": PAUSED if findings else READY}
@@ -1243,6 +1247,7 @@ def discard(run: str, *, ticket: int | None = None, budget: float | None = None)
 		return {**out, "state": record.state}
 	_mark(run, "Discarded", state="Discarded", applied=0, reconcile_cursor=0)
 	remove_after_discard(record)
+	run_overview.refresh(run)
 	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the end of a discard run from the bench or a worker
 	frappe.db.commit()
 	return {**out, "state": "Discarded", "seconds": round(monotonic() - started, 2)}

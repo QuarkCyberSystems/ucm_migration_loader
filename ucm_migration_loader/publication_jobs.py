@@ -103,10 +103,35 @@ def continue_set_based(run, action, ticket, max_batches, stop_at):
 			enqueue(run, action, ticket, max_batches, stop_at)
 
 
+def _keep_summary(run, action, seconds):
+	"""After a job: the time an activation or a discard took, and the columns of the run list."""
+	from .ucm_migration_loader import run_overview
+
+	try:
+		if seconds is not None and action in ("activate", "discard"):
+			run_overview.note(run, action, seconds)
+		run_overview.refresh(run)
+		# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the end of a queued job, whose work is committed or rolled back by now; kept also when the job failed
+		frappe.db.commit()
+	except Exception:
+		# what the list shows must never fail a load
+		frappe.db.rollback()
+		frappe.log_error(title="UCM migration run summary")
+
+
 def execute(run, action, ticket, max_batches, stop_at=None):
+	api._operator()
+	started, worked = monotonic(), False
+	try:
+		worked = _execute(run, action, ticket, max_batches, stop_at)
+	finally:
+		_keep_summary(run, action, monotonic() - started if worked else None)
+
+
+def _execute(run, action, ticket, max_batches, stop_at):
+	"""Run one job. Returns whether it held the run and did its work."""
 	from . import publication_cleanup, publication_worker
 
-	api._operator()
 	try:
 		if action == "activate":
 			from .held_shares import lock_activation
@@ -114,13 +139,13 @@ def execute(run, action, ticket, max_batches, stop_at=None):
 			lock_activation()
 		_, record = lock_run(run)
 		if record.dispatch_id != ticket:
-			return
+			return False
 		if set_based(run):
 			continue_set_based(run, action, ticket, max_batches, stop_at)
-			return
+			return True
 		if action == "activate":
 			publication_worker.activate(run)
-			return
+			return True
 		cursor = record.applied or 0
 		if stop_at is None:  # Jobs already in Redis before cursor bounds were introduced.
 			stop_at = max(0, cursor - max_batches) if action == "discard" else cursor + max_batches
@@ -128,14 +153,14 @@ def execute(run, action, ticket, max_batches, stop_at=None):
 		deadline = monotonic() + JOB_SECONDS
 		if action == "discard":
 			if record.state != CLEANING:
-				return
+				return False
 			result = publication_cleanup.discard(
 				run, limit, ticket=ticket, stop_at=stop_at, deadline=deadline
 			)
 			more = result["state"] == CLEANING and result["applied"] > stop_at
 		elif action == "apply":
 			if record.state != APPLYING:
-				return
+				return False
 			result = publication_worker.apply(run, limit, ticket=ticket, stop_at=stop_at, deadline=deadline)
 			more = result["state"] == APPLYING and result["applied"] < stop_at
 		else:
@@ -144,6 +169,7 @@ def execute(run, action, ticket, max_batches, stop_at=None):
 			_, current = lock_run(run)
 			if current.dispatch_id == ticket:
 				enqueue(run, action, ticket, max_batches, stop_at)
+		return True
 	except Exception as exc:
 		frappe.db.rollback()
 		_, record = lock_run(run)

@@ -9,6 +9,7 @@ import tempfile
 from collections import Counter, defaultdict
 from contextlib import closing, contextmanager
 from pathlib import Path
+from time import monotonic
 
 import frappe
 
@@ -108,9 +109,70 @@ def _inventory(db, run, manifest):
 	}
 
 
+REFUSALS = (
+	("schema_differences", "tables differ from this site"),
+	("release_differences", "application versions differ"),
+	("existing_keys", "record IDs are already on this site"),
+	("existing_share_receipts", "share receipts are already kept"),
+)
+
+
+def _staged_before(run, manifest, dest):
+	"""The run this publication already has on the site, where it was staged before. A file that was
+	refused before is checked again from the start, and takes over the refusal's record."""
+	if not frappe.db.get_value(api.RUN, run, "name", for_update=True):
+		return None
+	record = api._record(run)
+	if json.loads(record.manifest_json) != manifest or record.state == "Discarded":
+		raise ValueError("Existing run cannot receive this publication")
+	if record.state == "Rejected":
+		return None
+	verify_publication(dest, run)
+	return record
+
+
+def _keep_run(run, values):
+	"""Insert a run under its publication's identity, or take over the record a refusal left."""
+	if frappe.db.exists(api.RUN, run):
+		record = frappe.get_doc(api.RUN, run, for_update=True)
+		record.update(values)
+		record.save(ignore_permissions=True)
+	else:
+		record = frappe.get_doc({"doctype": api.RUN, **values})
+		record.insert(set_name=run, ignore_permissions=True)
+	return record
+
+
+def _refuse(run, manifest, inventory, seconds):
+	"""Keep a refused publication as a run the migration team can open, holding what differs and
+	nothing else: no file is kept and no row is written. Counts and names only, as the preflight."""
+	from .ucm_migration_loader import run_overview
+
+	reasons = [reason for key, reason in REFUSALS if inventory[key]]
+	_keep_run(
+		run,
+		{
+			"context_id": manifest["context"],
+			"snapshot_id": manifest["snapshot"],
+			"manifest_json": encoded(manifest).decode(),
+			"state": "Rejected",
+			"received": manifest["batches"],
+			"applied": 0,
+			"document_count": sum(manifest["counts"].values()),
+			"finding": "Preflight refused: " + ", ".join(reasons),
+			"reconciliation_json": json.dumps({"preflight": inventory}),
+			"timeline_json": None,
+		},
+	)
+	run_overview.staged(run, seconds, 0)
+	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the refusal is kept although the staging request fails; nothing else was written in this transaction
+	frappe.db.commit()
+
+
 def stage(path: str, run: str):
 	"""Bench operator entry point. Register only a verified private copy on this site."""
 	api._operator()
+	started = monotonic()
 	dest = local_publication(run)
 	dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 	with tempfile.TemporaryDirectory(dir=dest.parent) as work:
@@ -125,11 +187,8 @@ def stage(path: str, run: str):
 			raise ValueError("Publication targets another site")
 		context = manifest["context"]
 		frappe.db.get_value("Context", context, "name", for_update=True)
-		if frappe.db.get_value(api.RUN, run, "name", for_update=True):
-			record = api._record(run)
-			if json.loads(record.manifest_json) != manifest or record.state == "Discarded":
-				raise ValueError("Existing run cannot receive this publication")
-			verify_publication(dest, run)
+		record = _staged_before(run, manifest, dest)
+		if record:
 			return api._result(record)
 		if "Organization" not in manifest["counts"] or "sensitive_field_policy" not in manifest:
 			raise ValueError(
@@ -146,6 +205,7 @@ def stage(path: str, run: str):
 			or inventory["existing_keys"]
 			or inventory["existing_share_receipts"]
 		):
+			_refuse(run, manifest, inventory, monotonic() - started)
 			raise ValueError(f"Publication preflight failed: {inventory}")
 		from .application import check_closed
 
@@ -161,7 +221,7 @@ def stage(path: str, run: str):
 				raise ValueError(f"Incoming delegation already contains {dt} records")
 		if frappe.db.get_value(
 			api.RUN,
-			{"context_id": context, "state": ["!=", "Discarded"]},
+			{"context_id": context, "state": ["not in", ("Discarded", "Rejected")]},
 			"name",
 			for_update=True,
 		):
@@ -176,14 +236,17 @@ def stage(path: str, run: str):
 				os.fsync(fd)
 			finally:
 				os.close(fd)
+		from .ucm_migration_loader import run_overview
+		from .ucm_migration_loader.set_based import _business_batches
 		from .write_routes import default_plan
 
 		with closing(sqlite3.connect(dest.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
 			db.execute("pragma trusted_schema=OFF")
 			stamp = publication_index.build_index(db, dest, manifest)
-		record = frappe.get_doc(
+			business = _business_batches(db)
+		record = _keep_run(
+			run,
 			{
-				"doctype": api.RUN,
 				"context_id": context,
 				"snapshot_id": manifest["snapshot"],
 				"manifest_json": encoded(manifest).decode(),
@@ -193,9 +256,13 @@ def stage(path: str, run: str):
 				"received": manifest["batches"],
 				"applied": 0,
 				"document_count": sum(manifest["counts"].values()),
-			}
+				"finding": None,
+				"reconciliation_json": None,
+				"timeline_json": None,
+			},
 		)
-		record.insert(set_name=run, ignore_permissions=True)
+		# the form's step list: how long the check and staging took, and where the business batches end
+		run_overview.staged(run, monotonic() - started, business)
 		return api._result(record)
 
 

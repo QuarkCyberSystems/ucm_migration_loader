@@ -80,7 +80,10 @@ def configure(run: str, routes: dict | str):
 	if not set_based(routes):
 		for dt in routes:
 			route_for(routes, dt)
+	from .ucm_migration_loader.run_overview import route_of
+
 	record.write_plan_json = json.dumps(routes, sort_keys=True)
+	record.write_route = route_of(routes)
 	record.save(ignore_permissions=True)
 
 

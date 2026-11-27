@@ -1,9 +1,12 @@
 frappe.ui.form.on("UCM Migration Run", {
 	refresh(frm) {
 		if (frm.is_new()) return;
+		// a run is changed by its actions only, never by editing its fields
+		frm.disable_save();
 		const state = frm.doc.state;
-		show_batch_progress(frm);
+		if (state !== "Rejected") show_batch_progress(frm);
 		show_write_route(frm);
+		show_overview(frm);
 		frm.add_custom_button(__("View batches"), () =>
 			frappe.set_route("List", "UCM Migration Batch", { migration_run: frm.doc.name })
 		);
@@ -18,15 +21,11 @@ frappe.ui.form.on("UCM Migration Run", {
 					freeze: true,
 				});
 				await frm.reload_doc();
+				if (method === "activate") follow_activation(frm);
 			};
-			frm.add_custom_button(
-				__(label),
-				() => {
-					if (confirmation) return frappe.confirm(__(confirmation), submit);
-					return submit();
-				},
-				group
-			);
+			const ask = () => (confirmation ? frappe.confirm(__(confirmation), submit) : submit());
+			frm.add_custom_button(__(label), ask, group);
+			return ask;
 		}
 
 		if (state === "Publication staged" && !frm.doc.dispatch_id && !frm.doc.applied) {
@@ -46,15 +45,19 @@ frappe.ui.form.on("UCM Migration Run", {
 		if (["Paused", "Publication paused"].includes(state))
 			action("Resume from last receipt", "apply");
 		if (["Ready", "Publication ready"].includes(state)) {
-			action(
+			const activate = action(
 				"Activate delegation",
 				"activate",
 				"Open this delegation to its authorized users after reviewing reconciliation?"
 			);
+			// the decision a sealed publication's run waits for, beside the menu that holds every action
+			if (state === "Publication ready") {
+				frm.add_custom_button(__("Activate delegation"), activate).addClass("btn-primary");
+			}
 		}
 		if (["Cleaning", "Publication cleaning"].includes(state)) {
 			action("Resume cleanup", "discard");
-		} else if (!["Activated", "Discarded"].includes(state)) {
+		} else if (!["Activated", "Discarded", "Rejected"].includes(state)) {
 			action(
 				"Discard run",
 				"discard",
@@ -106,6 +109,32 @@ frappe.ui.form.on("UCM Migration Run", {
 	},
 });
 
+// Whether this run's form is the page in front of the user: a timer left by another form does nothing.
+function showing(frm) {
+	const route = frappe.get_route();
+	return route[0] === "Form" && route[1] === frm.doctype && route[2] === frm.doc.name;
+}
+
+// The worker opens the delegation after the request: show the result without a click, while this form stays open.
+function follow_activation(frm) {
+	frappe.show_alert({
+		message: __(
+			"Activation requested. This page shows the result when the worker has finished."
+		),
+		indicator: "blue",
+	});
+	const until = Date.now() + 30 * 60 * 1000;
+	clearInterval(frm.ucm_activation);
+	frm.ucm_activation = setInterval(async () => {
+		if (!showing(frm)) return clearInterval(frm.ucm_activation);
+		if (cur_dialog) return;
+		await frm.reload_doc();
+		// done, or refused with a finding; a worker that never answers is not waited for all day
+		if (frm.doc.state !== "Publication ready" || frm.doc.finding || Date.now() > until)
+			clearInterval(frm.ucm_activation);
+	}, 3000);
+}
+
 function show_batch_progress(frm) {
 	let batches;
 	try {
@@ -134,7 +163,7 @@ function show_batch_progress(frm) {
 			__("{0} · {1} batches reconciled · Last checkpoint {2}", [
 				__(frm.doc.worker_phase),
 				Number(frm.doc.reconcile_cursor || 0),
-				frm.doc.worker_seen,
+				frappe.datetime.str_to_user(frm.doc.worker_seen),
 			]);
 	}
 	frm.dashboard.show_progress(
@@ -229,4 +258,361 @@ async function configure_write_routes(frm) {
 		},
 	});
 	dialog.show();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The overview of a sealed publication's run: its steps, the rows on both sides and the verification's findings.
+// The server sends numbers and fixed names (run_overview.build); the sentences are made here.
+
+const STATUS = {
+	done: [__("Done"), "green"],
+	running: [__("Running"), "blue"],
+	paused: [__("Paused"), "orange"],
+	waiting: [__("Waiting"), "gray"],
+	failed: [__("Failed"), "red"],
+	decision: [__("Decision"), "yellow"],
+	stopped: [__("Stopped"), "gray"],
+};
+const SEVERITY = {
+	CRITICAL: [__("Critical"), "red"],
+	HIGH: [__("High"), "orange"],
+	MEDIUM: [__("Medium"), "yellow"],
+	LOW: [__("Low"), "gray"],
+};
+const STEP_LABEL = {
+	stage: __("Check and stage"),
+	write: __("Write"),
+	derive: __("Derive"),
+	verify: __("Verify"),
+	"hand over": __("Hand over to data quality"),
+	activate: __("Activate"),
+	discard: __("Discard"),
+};
+// what a verification can find and what a derivation changes: fixed names from the server, shown translated
+const CHECK = {
+	"rows missing in UCM": __("Rows missing in UCM"),
+	"rows in UCM that were not published": __("Rows in UCM that were not published"),
+	"published rows not found by their key": __("Published rows not found by their key"),
+	"field differs from the publication": __("Field differs from the publication"),
+	"rule broken": __("Rule broken"),
+	"batch receipts differ from the publication": __("Batch receipts differ from the publication"),
+};
+const DERIVED = {
+	"place geography": __("Place geography"),
+	"department copies": __("Department copies"),
+	"country copies": __("Country copies"),
+	"share facts": __("Share facts"),
+	"latest state marks": __("Latest state marks"),
+};
+const RUNNING = ["Publication applying", "Publication cleaning"];
+
+const number = (n) => Number(n || 0).toLocaleString();
+const safe = (text) => frappe.utils.escape_html(String(text ?? ""));
+const pill = ([label, color]) =>
+	`<span class="indicator-pill ${color} no-indicator-dot">${safe(label)}</span>`;
+
+function spell_seconds(seconds) {
+	if (seconds === null || seconds === undefined) return "";
+	const whole = Math.round(seconds);
+	if (whole < 60) return __("{0} s", [seconds < 10 ? Math.round(seconds * 10) / 10 : whole]);
+	if (whole < 3600) return __("{0} min {1} s", [Math.floor(whole / 60), whole % 60]);
+	return __("{0} h {1} min", [Math.floor(whole / 3600), Math.floor((whole % 3600) / 60)]);
+}
+
+function refusal(facts) {
+	const parts = [];
+	const tables = facts.schema_differences || [];
+	if (tables.length)
+		parts.push(__("Tables that differ from this site: {0}", [tables.join(", ")]));
+	for (const [app, versions] of Object.entries(facts.release_differences || {})) {
+		parts.push(
+			__("{0}: published with {1}, this site has {2}", [
+				app,
+				versions.published,
+				versions.target || __("none"),
+			])
+		);
+	}
+	const keys = Object.entries(facts.existing_keys || {}).filter(([, n]) => n);
+	if (keys.length)
+		parts.push(
+			__("Record IDs already on this site: {0}", [
+				keys.map(([dt, n]) => `${dt} ${number(n)}`).join(", "),
+			])
+		);
+	if (facts.existing_share_receipts)
+		parts.push(
+			__("{0} share receipts already kept for these IDs", [
+				number(facts.existing_share_receipts),
+			])
+		);
+	return parts.join(" · ");
+}
+
+function verify_detail(step, set_based) {
+	const facts = step.facts;
+	if (step.status === "failed") {
+		return facts.findings === 1
+			? __("1 finding, listed below")
+			: __("{0} findings, listed below", [number(facts.findings)]);
+	}
+	if (step.status === "done") {
+		return set_based
+			? __(
+					"{0} rows compared with the publication, {1} rules checked, {2} records through the documents: nothing found",
+					[number(facts.rows), number(facts.rules), number(facts.sampled)]
+			  )
+			: __("{0} rows read back through the documents and compared: nothing found", [
+					number(facts.rows),
+			  ]);
+	}
+	if (["running", "paused"].includes(step.status) && facts.business) {
+		return __("{0} of {1} batches compared", [
+			number(facts.reconciled),
+			number(facts.business),
+		]);
+	}
+	return "";
+}
+
+function step_detail(step, data) {
+	const facts = step.facts || {};
+	const set_based = data.facts.route === SET_BASED;
+	if (step.step === "stage") {
+		if (step.status === "failed") return refusal(facts);
+		return __("{0} batches, {1} rows, {2} tables with the columns of this site", [
+			number(facts.batches),
+			number(facts.rows),
+			number(facts.tables),
+		]);
+	}
+	if (step.step === "write") {
+		if (!facts.batches) return "";
+		// a run loaded before the receipts kept the rows of a batch
+		if (!facts.parents) return __("{0} batches", [number(facts.batches)]);
+		const routes = Object.entries(facts.by_route || {}).map(([route, n]) =>
+			__("{0} by {1}", [number(n), __(route)])
+		);
+		return (
+			__("{0} records in {1} batches", [number(facts.parents), number(facts.batches)]) +
+			(routes.length > 1 ? " · " + routes.join(", ") : "")
+		);
+	}
+	if (step.step === "derive") {
+		if (step.status !== "done") return "";
+		const changed = Object.entries(facts.changed || {}).filter(([, n]) => n);
+		if (!changed.length)
+			return __("Nothing to change: the publication carried what UCM derives");
+		return changed
+			.map(([what, n]) => __("{0}: {1} rows", [DERIVED[what] || what, number(n)]))
+			.join(" · ");
+	}
+	if (step.step === "verify") return verify_detail(step, set_based);
+	if (step.step === "hand over") {
+		if (step.status === "done") {
+			return __("{0} metrics kept in {1}, recorded by {2} on {3}", [
+				number(facts.rows),
+				facts.destination,
+				facts.by,
+				frappe.datetime.str_to_user(facts.on),
+			]);
+		}
+		if (facts.on) {
+			return __(
+				"Handed over on {0}, before the run's last step. Run ucm-push quality again on the migration side.",
+				[frappe.datetime.str_to_user(facts.on)]
+			);
+		}
+		return __("Not handed over yet. Run ucm-push quality on the migration side.");
+	}
+	if (step.step === "activate") {
+		if (step.status === "decision") {
+			const held = facts.deferred || {};
+			return __(
+				"Needs a decision. {0} assignments and {1} shares are released at activation.",
+				[number(held.ToDo), number(held["Record Share"])]
+			);
+		}
+		if (step.status !== "done") return "";
+		const released = Object.values(facts.released || {}).reduce((sum, n) => sum + n, 0);
+		return __(
+			"By {0} on {1}. {2} assignments and shares released, {3} shares held for delegations not yet live.",
+			[facts.by, frappe.datetime.str_to_user(facts.on), number(released), number(facts.held)]
+		);
+	}
+	return "";
+}
+
+function steps_html(data) {
+	const rows = data.steps.map(
+		(step) => `
+		<tr>
+			<td style="width: 6.5rem">${pill(STATUS[step.status] || [step.status, "gray"])}</td>
+			<td>
+				<div><b>${safe(STEP_LABEL[step.step] || step.step)}</b>
+					<span class="text-muted">${safe(spell_seconds(step.seconds))}</span></div>
+				<div class="text-muted small">${safe(step_detail(step, data))}</div>
+			</td>
+		</tr>`
+	);
+	return `<h6 class="uppercase">${__(
+		"Steps"
+	)}</h6><table class="table table-borderless table-sm">${rows.join("")}</table>`;
+}
+
+function facts_html(data) {
+	const facts = data.facts;
+	const versions = Object.entries(facts.versions)
+		.map(([app, version]) => `${app} ${version}`)
+		.join(", ");
+	const rows = [
+		[__("Delegation"), data.delegation],
+		[__("Route"), __(facts.route)],
+		[__("Snapshot"), facts.snapshot],
+		[__("Staged"), frappe.datetime.str_to_user(facts.started_on)],
+		[__("Staged by"), facts.started_by],
+		[__("Publishing account"), facts.publishing_user],
+		[__("Published with"), versions],
+	].filter(([, value]) => value);
+	return `<h6 class="uppercase">${__(
+		"Run"
+	)}</h6><table class="table table-borderless table-sm">${rows
+		.map(
+			([label, value]) =>
+				`<tr><td class="text-muted" style="width: 9rem">${safe(label)}</td><td>${safe(
+					value
+				)}</td></tr>`
+		)
+		.join("")}</table>`;
+}
+
+function records_html(data) {
+	let published = 0,
+		stored = 0,
+		counted = false;
+	const rows = data.records.map((row) => {
+		published += row.published;
+		let target = "",
+			difference = "";
+		if (row.stored === null) {
+			if (row.deferred && data.state !== "Rejected")
+				target = `<span class="text-muted">${__("held until activation")}</span>`;
+		} else {
+			counted = true;
+			stored += row.stored + row.held;
+			target =
+				number(row.stored) +
+				(row.held
+					? ` <span class="text-muted">${__("+ {0} held", [number(row.held)])}</span>`
+					: "");
+			const missing = row.published - row.stored - row.held;
+			difference = missing ? `<span class="text-danger">${number(-missing)}</span>` : "0";
+		}
+		return `<tr><td>${safe(__(row.doctype))}</td><td class="text-right">${number(
+			row.published
+		)}</td>
+			<td class="text-right">${target}</td><td class="text-right">${difference}</td></tr>`;
+	});
+	return `<h6 class="uppercase">${__("Records")}</h6>
+		<table class="table table-bordered table-sm">
+			<thead><tr><th>${__("Table")}</th><th class="text-right">${__("Published")}</th>
+				<th class="text-right">${__("In UCM")}</th><th class="text-right">${__(
+		"Difference"
+	)}</th></tr></thead>
+			<tbody>${rows.join("")}</tbody>
+			<tfoot><tr><th>${__("Total")}</th><th class="text-right">${number(published)}</th>
+				<th class="text-right">${counted ? number(stored) : ""}</th><th></th></tr></tfoot>
+		</table>`;
+}
+
+function findings_html(data) {
+	if (!data.findings.length) return "";
+	const rows = data.findings.map(
+		(row) => `
+		<tr>
+			<td>${safe(CHECK[row.check] || row.check)}${
+			row.detail ? `<div class="text-muted small">${safe(row.detail)}</div>` : ""
+		}</td>
+			<td>${safe(__(row.doctype))}</td>
+			<td class="text-right">${number(row.found)}</td>
+			<td>${pill(SEVERITY[row.severity] || [row.severity, "gray"])}</td>
+			<td>${row.batch ? safe(__("Batch {0}, item {1}", [row.batch, row.item])) : ""}</td>
+		</tr>`
+	);
+	return `<h6 class="uppercase">${__("Findings")}</h6>
+		<table class="table table-bordered table-sm">
+			<thead><tr><th>${__("Check")}</th><th>${__("Table")}</th><th class="text-right">${__("Rows")}</th>
+				<th>${__("Severity")}</th><th>${__("First place in the publication")}</th></tr></thead>
+			<tbody>${rows.join("")}</tbody>
+		</table>
+		<p class="text-muted small">${__(
+			"The run stays paused whatever the severity. Places are a batch and an item of the sealed file, never a record's content."
+		)}</p>`;
+}
+
+function show_intro(frm, data) {
+	const state = data.state,
+		who = data.delegation;
+	if (state === "Publication ready") {
+		frm.set_intro(
+			__(
+				"All checks passed. {0} is hidden from users until it is activated. Activation is recorded with your name and the time.",
+				[who]
+			),
+			"blue"
+		);
+	} else if (state === "Publication paused" && data.findings.length) {
+		const text =
+			data.findings.length === 1
+				? __(
+						"1 finding. {0} cannot be activated and stays hidden. Correct the publication or the reference data, then resume or discard the run.",
+						[who]
+				  )
+				: __(
+						"{0} findings. {1} cannot be activated and stays hidden. Correct the publication or the reference data, then resume or discard the run.",
+						[data.findings.length, who]
+				  );
+		frm.set_intro(text, "red");
+	} else if (["Publication paused", "Rejected"].includes(state) && data.finding) {
+		frm.set_intro(data.finding, state === "Rejected" ? "red" : "orange");
+	} else if (state === "Activated") {
+		frm.set_intro(__("{0} is open to its users.", [who]), "green");
+	} else if (state === "Discarded") {
+		frm.set_intro(
+			__("This run was discarded. Its rows are removed and its receipts are kept.")
+		);
+	}
+}
+
+async function show_overview(frm) {
+	const field = frm.get_field("overview");
+	if (!field) return;
+	const { message: data } = await frappe.call({
+		method: "ucm_migration_loader.ucm_migration_loader.doctype.ucm_migration_run.ucm_migration_run.overview",
+		args: { run: frm.doc.name },
+	});
+	if (!data || !data.publication) {
+		field.$wrapper.empty();
+		return;
+	}
+	show_intro(frm, data);
+	field.$wrapper.html(`
+		<div class="row">
+			<div class="col-md-7">${steps_html(data)}</div>
+			<div class="col-md-5">${facts_html(data)}</div>
+		</div>
+		${findings_html(data)}
+		${records_html(data)}`);
+	if (data.quality_url) {
+		frm.add_custom_button(__("Open in data quality dashboard"), () =>
+			window.open(data.quality_url, "_blank", "noopener")
+		);
+	}
+	// a load at work: show its progress without a click, while this form stays open
+	clearTimeout(frm.ucm_refresh);
+	if (RUNNING.includes(data.state)) {
+		frm.ucm_refresh = setTimeout(() => {
+			if (showing(frm) && !cur_dialog) frm.reload_doc();
+		}, 10000);
+	}
 }
