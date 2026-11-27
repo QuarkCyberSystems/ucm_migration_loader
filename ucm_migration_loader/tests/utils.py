@@ -193,3 +193,22 @@ def remove_files(run: str) -> None:
 	path.unlink(missing_ok=True)
 	publication_index.index_path(path).unlink(missing_ok=True)
 	shutil.rmtree(folder(run), ignore_errors=True)
+
+
+def hand_off(path: Path, run: str) -> Path:
+	"""The hand-off of a sealed file, as `ucm-push seal` writes it beside the file."""
+	import hashlib as hashes
+
+	with closing(sqlite3.connect(path)) as db:
+		manifest = json.loads(db.execute("select manifest from descriptor").fetchone()[0])
+	data = path.read_bytes()
+	handoff = {
+		"run": run,
+		"verified": True,
+		"file_sha256": hashes.sha256(data).hexdigest(),
+		"file_bytes": len(data),
+		**manifest,
+	}
+	out = path.with_name("handoff.json")
+	out.write_text(json.dumps(handoff))
+	return out
