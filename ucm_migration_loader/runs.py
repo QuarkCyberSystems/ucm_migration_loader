@@ -9,6 +9,12 @@ from frappe import _
 from .constants import ACTIVATED, ROLE, RUN
 
 
+class Unprepared(ValueError):
+	"""The site is not ready for this delegation: something its records refer to is not there, or the site's
+	sensitive-field setup differs from the publication's. Its sentence names a DocType, never a record or a
+	value, so the run shows it to the migration team."""
+
+
 def only_admin():
 	"""Who runs a migration on this site: the Migration Admin role, which the loader's DocTypes bring with them.
 	A System Manager reads the runs and gives the role."""

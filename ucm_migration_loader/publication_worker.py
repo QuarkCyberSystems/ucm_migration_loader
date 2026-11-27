@@ -93,7 +93,9 @@ def resolve_reference(db, cache, master, value):
 			):
 				resolved = None
 		if not resolved:
-			raise ValueError(f"Unresolved reference for {master}")
+			raise runs.Unprepared(
+				f"A {master} the delegation refers to is not on this site, or differs from the published one"
+			)
 		cache[identity] = resolved
 	return cache[identity]
 
@@ -568,7 +570,9 @@ def verify_sensitive_policy(manifest):
 	if "Organization" in manifest["counts"] and sensitive_policy(
 		frappe.db._conn, manifest["context"], for_update=True
 	) != manifest.get("sensitive_field_policy"):
-		raise ValueError("Target sensitive field assignments or context exemptions differ from publication")
+		raise runs.Unprepared(
+			"The site's sensitive field assignments or the delegation's exemptions differ from the publication"
+		)
 
 
 def reconcile_business(db, ctx, record, manifest, *, checkpoint=False):

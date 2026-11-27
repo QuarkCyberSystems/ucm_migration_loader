@@ -8,7 +8,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import get_datetime
 
-from ucm_migration_loader import constants, publication_jobs
+from ucm_migration_loader import constants, publication_jobs, runs
 from ucm_migration_loader.tests.utils import REPORT, hidden_context, make_receipt, make_run
 from ucm_migration_loader.ucm_migration_loader import run_overview
 
@@ -240,6 +240,25 @@ class TestFailedJob(IntegrationTestCase):
 			self.assertRaises(frappe.db.OperationalError, publication_jobs.execute, run, "apply", 4, 5)
 		self.assertEqual(column(run, "state"), "Publication paused")
 		self.assertEqual(column(run, "finding"), "apply after committed batch 1: OperationalError")
+
+	def test_a_load_the_site_is_not_ready_for_says_what_is_missing(self):
+		"""In a sentence that names a DocType. Any other failure gives its kind only: it may quote a value."""
+		context = hidden_context("LDS5")
+		run = make_run(state="Publication applying", context=context, dispatch_id=4).name
+		missing = runs.Unprepared("A Field Clearance the delegation refers to is not on this site")
+		for failure, shown in (
+			(missing, str(missing)),
+			(ValueError("invalid literal: 'a name'"), "ValueError"),
+		):
+			frappe.db.set_value(constants.RUN, run, {"state": "Publication applying", "finding": None})
+			with (
+				patch.object(frappe.db, "commit"),
+				patch.object(publication_jobs, "set_based", side_effect=failure),
+				patch.object(publication_jobs, "_roll_back"),
+			):
+				self.assertRaises(ValueError, publication_jobs.execute, run, "apply", 4, 5)
+			self.assertEqual(column(run, "state"), "Publication paused")
+			self.assertEqual(column(run, "finding"), f"apply after committed batch 0: {shown}")
 
 
 class TestRouteOfABenchLoad(IntegrationTestCase):

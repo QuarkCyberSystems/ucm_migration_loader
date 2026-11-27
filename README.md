@@ -160,7 +160,7 @@ assert ctx.name == context_id
 frappe.db.commit()
 ```
 
-Provision UCM's shared dictionaries, referenced catalogs, historical users, sensitive-field policy, context exemptions and intended access grants. The loader does not load this reference data: a publication carries the delegation's own records only. Before the first batch is written, the load checks that everything those records refer to outside the publication is on the site, and stops with the DocType it could not resolve. UCM document sharing must be disabled in System Settings. For the first delegation these prerequisites may need initial setup. For later delegations, prepare the incoming context while existing contexts remain active.
+Provision UCM's shared dictionaries, referenced catalogs, historical users, sensitive-field policy, context exemptions and intended access grants. The loader does not load this reference data: a publication carries the delegation's own records only. Before the first batch is written, the load checks that everything those records refer to outside the publication is on the site. Where something is missing the run pauses with nothing written, and its form names the DocType. UCM document sharing must be disabled in System Settings. For the first delegation these prerequisites may need initial setup. For later delegations, prepare the incoming context while existing contexts remain active.
 
 ### 2. Inspect and prepare the publication on the publishing host
 

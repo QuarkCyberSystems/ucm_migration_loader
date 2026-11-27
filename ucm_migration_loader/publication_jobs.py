@@ -198,8 +198,10 @@ def _execute(run, action, ticket, max_batches, stop_at):
 			if location := getattr(exc, "migration_location", None):
 				sequence, position, dt = location
 				where = f"batch {sequence}, item {position} ({dt})"
+			# what the site lacks is said in a sentence without data; any other failure gives its kind only
+			said = str(exc) if isinstance(exc, runs.Unprepared) else type(exc).__name__
 			update = {
-				"finding": f"{action} {where}: {type(exc).__name__}",
+				"finding": f"{action} {where}: {said}",
 				"worker_phase": f"{action} failed",
 				"worker_seen": now_datetime(),
 			}

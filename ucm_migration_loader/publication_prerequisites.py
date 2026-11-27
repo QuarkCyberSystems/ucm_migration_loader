@@ -6,6 +6,7 @@ import frappe
 
 from .frozen import CHILDREN, LOOKUPS, ORDER
 from .publication_worker import resolve_reference, verify_place_address
+from .runs import Unprepared
 
 
 def verify_links(db):
@@ -55,4 +56,4 @@ def verify_links(db):
 			elif not frappe.db.exists("DocType", dt) or frappe.db.count(dt, {"name": ["in", keys]}) != len(
 				keys
 			):
-				raise ValueError(f"Unresolved external {dt} reference")
+				raise Unprepared(f"A {dt} the delegation refers to is not on this site")
