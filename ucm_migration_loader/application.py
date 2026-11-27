@@ -4,6 +4,7 @@ import json
 from hashlib import sha256
 
 import frappe
+from frappe import _
 
 from . import api, reconciliation
 from .contract import FIELDS, check_documents, digest
@@ -65,7 +66,7 @@ def refuse_if_applying(context):
 		"name",
 		for_update=True,
 	):
-		frappe.throw("This migration is applying hidden batches. Activate or discard its run first.")
+		frappe.throw(_("This migration is applying hidden batches. Activate or discard its run first."))
 
 
 def payload(record, sequence):

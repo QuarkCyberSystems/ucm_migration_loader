@@ -153,6 +153,7 @@ def stage(path: str, run: str):
 		check_closed(ctx, pilot=False)
 		for dt in ORDER:
 			where = selection(dt)
+			# nosemgrep: frappe-semgrep-rules.rules.security.frappe-sql-format-injection -- reviewed: the DocType is one of ORDER and the condition is built by selection() from constants; the context is a parameter
 			if frappe.db.sql(
 				f"select 1 from `tab{dt}` r {where} limit 1",
 				(context,) * where.count("%s"),

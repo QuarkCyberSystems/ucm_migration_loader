@@ -625,7 +625,7 @@ def _link_rules(df, number: int, context: str, rules: dict, values: dict) -> Non
 		)
 		offered = allowed(concept, context)
 		if offered is not None:
-			values[f"offered{number}"] = tuple(map(str, offered)) or ("",)
+			values[f"offered{number}"] = tuple(str(value) for value in offered) or ("",)
 			rules[f"{field}: not in the list this context uses"] = (
 				f"{_filled(field)} and cast(r.`{field}` as char) not in %(offered{number})s"
 			)

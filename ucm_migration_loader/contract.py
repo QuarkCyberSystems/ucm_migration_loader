@@ -223,7 +223,7 @@ def plan(
 		"site": site,
 		"snapshot": snapshot,
 		"context": context,
-		"batches": list(map(digest, batches)),
+		"batches": [digest(batch) for batch in batches],
 	}
 	if attempt != 1:
 		manifest["attempt"] = attempt

@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import frappe
+from frappe import _
 
 from . import api
 from .publication_receiver import local_publication, stage
@@ -59,10 +60,10 @@ def transfer(run):
 	root = folder(run)
 	approval_file = root / "approval.json"
 	if not approval_file.is_file():
-		frappe.throw("Publication transfer unavailable", frappe.PermissionError)
+		frappe.throw(_("Publication transfer unavailable"), frappe.PermissionError)
 	approval = json.loads(approval_file.read_bytes())
 	if approval["publisher"] != frappe.session.user:
-		frappe.throw("Publication transfer unavailable", frappe.PermissionError)
+		frappe.throw(_("Publication transfer unavailable"), frappe.PermissionError)
 	with approval_file.open("rb") as lock:
 		fcntl.flock(lock, fcntl.LOCK_EX)
 		yield root, approval

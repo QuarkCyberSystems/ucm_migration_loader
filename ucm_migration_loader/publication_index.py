@@ -20,8 +20,9 @@ def build_index(db, path, manifest):
 	"""Called inside the verified publication snapshot, with the receiving run locked."""
 	destination = index_path(path)
 	chain = hashlib.sha256()
-	with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as output:
-		tmp = Path(output.name)
+	descriptor, name = tempfile.mkstemp(dir=path.parent)
+	os.close(descriptor)
+	tmp = Path(name)
 	try:
 		with tmp.open("wb") as output:
 			count = 0

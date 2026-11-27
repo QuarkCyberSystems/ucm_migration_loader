@@ -71,7 +71,7 @@ def remove_item(db, context, item):
 			pluck=True,
 			for_update=True,
 		)
-		if list(map(str, stored)) != expected:
+		if [str(name) for name in stored] != expected:
 			raise ValueError("Child inventory changed after import")
 	files = item.get("files", [])
 	stored_files = frappe.db.get_values(

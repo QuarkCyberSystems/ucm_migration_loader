@@ -501,7 +501,7 @@ def reconcile_item(db, cache, item):
 			order_by="idx asc",
 			pluck="name",
 		)
-		if list(map(str, stored)) != [r["name"] for r in records]:
+		if [str(name) for name in stored] != [r["name"] for r in records]:
 			raise ValueError(f"Published {child} inventory differs")
 		for child_row in records:
 			checked_row(
@@ -591,6 +591,7 @@ def reconcile_business(db, ctx, record, manifest, *, checkpoint=False):
 			if dt == "Organization" and dt not in manifest["counts"]:
 				continue
 			where = selection(dt, organizations="Organization" in manifest["counts"])
+			# nosemgrep: frappe-semgrep-rules.rules.security.frappe-sql-format-injection -- reviewed: the DocType is one of ORDER and the condition is built by selection() from constants; the context is a parameter
 			count = frappe.db.sql(
 				f"select count(*) from `tab{dt}` r {where}",
 				(ctx.name,) * where.count("%s"),
@@ -802,6 +803,7 @@ def _activate(run):
 			publication_index.check_identity(path, stamp)
 			api.mark_activated(run)
 			result = api._result(api._record(run))
+			# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the activation is one transaction of the queued job, which ends here
 			frappe.db.commit()
 			return result
 		except Exception:

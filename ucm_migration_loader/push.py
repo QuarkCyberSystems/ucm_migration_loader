@@ -414,7 +414,7 @@ def main():
 			**scope,
 			"run": digest(manifest),
 			"batches": len(batches),
-			"documents": sum(map(len, batches)),
+			"documents": sum(len(batch) for batch in batches),
 			"payload_bytes": sum(len(encoded(batch)) for batch in batches),
 			"rows_by_type": {
 				**{
