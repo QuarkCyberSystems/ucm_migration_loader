@@ -145,9 +145,7 @@ def _load(args, said, env, push, sealed, run, snapshot, publisher) -> dict:
 
 def flow(args) -> dict:
 	from rehearsal_bench import publisher_identity, tls_site
-	from set_based_queue import connect, record
-
-	from ucm_migration_loader.ucm_migration_loader import set_based
+	from set_based_queue import connect
 
 	connect(args.site)
 	said = {}
