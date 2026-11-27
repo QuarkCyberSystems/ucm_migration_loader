@@ -7,8 +7,8 @@ app_license = "GPL-3.0"
 required_apps = ["ucm"]
 
 doc_events = {
-    "Context": {"validate": "ucm_migration_loader.application.guard_context"},
-    "Record Share": {"validate": "ucm_migration_loader.application.guard_share"},
+	"Context": {"validate": "ucm_migration_loader.application.guard_context"},
+	"Record Share": {"validate": "ucm_migration_loader.application.guard_share"},
 }
 
 before_request = ["ucm_migration_loader.migration_load.before_request"]

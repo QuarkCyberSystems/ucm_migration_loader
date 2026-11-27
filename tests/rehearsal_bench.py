@@ -2,8 +2,4 @@
 
 from pathlib import Path
 
-BENCH = next(
-    root
-    for root in Path(__file__).resolve().parents
-    if (root / "sites" / "apps.txt").is_file()
-)
+BENCH = next(root for root in Path(__file__).resolve().parents if (root / "sites" / "apps.txt").is_file())

@@ -7,6 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
+
 from ucm_migration_loader import write_routes
 from ucm_migration_loader.ucm_migration_loader import set_based
 
