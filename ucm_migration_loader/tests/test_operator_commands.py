@@ -440,6 +440,27 @@ class TestStagingAfterArrival(OperatorCase):
 		publication_transport.stage_arrived(run)
 		self.assertEqual(desk.stage_now(run)["outcome"], "staged")
 
+	def test_the_pieces_are_removed_once_the_file_is_staged(self):
+		path, run, handoff = self.sealed()
+		operator.approve(handoff, self.publisher)
+		self.send(path, run)
+		publication_transport.stage_arrived(run)
+		frappe.set_user(self.admin)
+		inbox = publication_transport.folder(run)
+		self.assertTrue(any(piece.name.isdigit() for piece in inbox.iterdir()))
+		# what the staging does once it is committed
+		publication_transport.clear_pieces(run)
+		self.assertEqual(
+			sorted(piece.name for piece in inbox.iterdir()), ["approval.json", publication_transport.STAGED]
+		)
+		# asked again, the site still says the whole file arrived, and the run is the staged one
+		frappe.set_user(self.publisher)
+		arrived = publication_transport.status(run)
+		self.assertEqual(arrived["offset"], arrived["size"])
+		frappe.set_user(self.admin)
+		self.assertEqual(publication_transport.receive(run)["state"], "Publication staged")
+		self.assertEqual(desk.stage_now(run)["outcome"], "staged")
+
 	def test_a_file_the_site_refuses_becomes_a_refused_run(self):
 		path, run, handoff = self.sealed(versions={"ucm": "0.0.0-not-this-site"})
 		operator.approve(handoff, self.publisher)

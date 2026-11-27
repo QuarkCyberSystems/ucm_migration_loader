@@ -14,14 +14,12 @@ import frappe
 from frappe import _
 
 from . import api
-from .publication_receiver import local_publication, stage
+from .contract import TRANSFER_CHUNK as CHUNK
+from .publication_receiver import inbox as folder
+from .publication_receiver import stage
 
-CHUNK = 512 * 1024
-
-
-def folder(run):
-	local_publication(run)  # validate identifier before constructing any path
-	return Path(frappe.get_site_path("private", "migration-inbox", run))
+# left in a run's inbox once its file is staged and its pieces are removed
+STAGED = "staged"
 
 
 def approve(run: str, publisher: str, sha256: str, size: int):
@@ -74,6 +72,8 @@ def progress(root, approval):
 	# Use binary search over a contiguous immutable prefix to recover the cursor.
 	size = approval["size"]
 	lo, hi = 0, (size + CHUNK - 1) // CHUNK
+	if (root / STAGED).is_file():
+		lo = hi  # the whole file arrived and was staged: its pieces are gone
 	while lo < hi:
 		mid = (lo + hi + 1) // 2
 		if (root / str(mid - 1)).is_file():
@@ -171,9 +171,21 @@ def stage_arrived(run: str) -> None:
 		raise
 
 
+def clear_pieces(run: str) -> None:
+	"""The run's file is staged, and the site keeps the staged file: remove the pieces it arrived in. A mark
+	stays, so that a sender who asks again is told the whole file arrived."""
+	root = folder(run)
+	(root / STAGED).touch(mode=0o600)
+	for piece in root.iterdir():
+		if piece.name.isdigit():
+			piece.unlink(missing_ok=True)
+
+
 def receive(run: str):
 	api._operator()
 	root = folder(run)
+	if (root / STAGED).is_file():
+		return api._result(api._record(run))
 	approval = json.loads((root / "approval.json").read_bytes())
 	if progress(root, approval)["offset"] != approval["size"]:
 		raise ValueError("Publication transfer is incomplete")
@@ -191,4 +203,6 @@ def receive(run: str):
 		# the account that sent the file may read the status, the report and the metrics of this
 		# run, and of no other (api._publisher_or_operator)
 		frappe.db.set_value(api.RUN, run, "publishing_user", approval["publisher"], update_modified=False)
+		# once the staging is committed; a staging that is rolled back keeps its pieces to stage again
+		frappe.db.after_commit.add(lambda: clear_pieces(run))
 		return result

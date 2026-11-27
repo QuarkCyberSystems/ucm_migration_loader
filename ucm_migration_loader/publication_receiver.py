@@ -33,6 +33,12 @@ def local_publication(run):
 	return Path(frappe.get_site_path("private", "migration-publications", run + ".sqlite"))
 
 
+def inbox(run):
+	"""Where the pieces of a run's sealed file arrive, with the approval they are checked against."""
+	local_publication(run)  # the identifier is checked before any path is made from it
+	return Path(frappe.get_site_path("private", "migration-inbox", run))
+
+
 def schema_differences(manifest):
 	if "schema" not in manifest:
 		return None  # Earlier sealed files predate the schema receipt.
@@ -321,6 +327,10 @@ def rebuild_index(run: str):
 
 
 def remove_after_discard(record):
-	path = local_publication(record.name)
+	import shutil
+
+	path, arrived = local_publication(record.name), inbox(record.name)
 	frappe.db.after_commit.add(lambda: path.unlink(missing_ok=True))
 	frappe.db.after_commit.add(lambda: publication_index.index_path(path).unlink(missing_ok=True))
+	# with the approval: no file is accepted for a discarded run
+	frappe.db.after_commit.add(lambda: shutil.rmtree(arrived, ignore_errors=True))
