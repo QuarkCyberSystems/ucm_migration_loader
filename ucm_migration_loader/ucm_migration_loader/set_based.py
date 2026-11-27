@@ -1133,7 +1133,13 @@ def activate(run: str, commit: bool = True) -> dict:
 			sealed.unchanged()
 			_mark(run, "Activated", applied=manifest["batches"], reconciliation_json=json.dumps(report))
 			api.mark_activated(run)
-			result = {**api._result(api._record(run)), "seconds": round(monotonic() - started, 2)}
+			result = {
+				**api._result(api._record(run)),
+				"released_access_rows": report["released_access_rows"],
+				"shares_held_at_activation": held,
+				"inbound_share_outcomes": report["inbound_share_outcomes"],
+				"seconds": round(monotonic() - started, 2),
+			}
 			if commit:
 				# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the go-live transaction: the access rows, the open context and the run's record commit together
 				frappe.db.commit()
