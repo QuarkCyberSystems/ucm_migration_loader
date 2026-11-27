@@ -14,3 +14,91 @@ build-backend = "flit_core.buildapi"
 
 [tool.bench.frappe-dependencies]
 frappe = ">=16,<17"
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+# The tests that need no site. Those that need one are in the app (bench run-tests); the other files of tests/
+# are rehearsals, run by hand against a development site.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 110
+# ucm-push runs on the migration side, on the oldest Python the package supports
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "F",
+    "E",
+    "W",
+    "I",
+    "UP",
+    "B",
+    "RUF",
+    "C901", # a function's complexity, held at max-complexity below
+    "PLR0912", # too many branches
+    "PLR0915", # too many statements
+]
+ignore = [
+    "B017", # assertRaises(Exception) - should be more specific
+    "B018", # useless expression, not assigned to anything
+    "B023", # function doesn't bind loop variable - will have last iteration's value
+    "B904", # raise inside except without from
+    "E101", # indentation contains mixed spaces and tabs
+    "E402", # module level import not at top of file
+    "E501", # line too long
+    "E741", # ambiguous variable name
+    "F401", # "unused" imports
+    "F403", # can't detect undefined names from * import
+    "F405", # can't detect undefined names from * import
+    "F722", # syntax error in forward type annotation
+    "W191", # indentation contains tabs
+    "UP030", # Use implicit references for positional format fields (translations)
+    "UP031", # Use format specifiers instead of percent format
+    "UP032", # Use f-string instead of `format` call (translations)
+    "UP037", # quoted annotations
+    "UP040", # Use type aliases instead of type annotations
+]
+typing-modules = ["frappe.types.DF"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+[tool.ruff.lint.pylint]
+max-branches = 15
+max-statements = 60
+
+# The functions above the limits when they were set: brought down as they are touched, not raised again
+[tool.ruff.lint.per-file-ignores]
+"**/test_*.py" = ["C901", "PLR0915"]
+"tests/batch_recovery.py" = ["PLR0915"]
+"tests/checkpoint_recovery.py" = ["C901"]
+"tests/generator_casework.py" = ["C901", "PLR0912"]
+"tests/generator_committed_waves.py" = ["C901", "PLR0912", "PLR0915"]
+"tests/generator_coverage.py" = ["C901"]
+"tests/generator_end_to_end.py" = ["C901", "PLR0915"]
+"tests/generator_reload_wave.py" = ["PLR0915"]
+"ucm_migration_loader/api.py" = ["C901", "PLR0912"]
+"ucm_migration_loader/contract.py" = ["C901"]
+"ucm_migration_loader/evidence.py" = ["C901"]
+"ucm_migration_loader/frozen.py" = ["C901"]
+"ucm_migration_loader/held_shares.py" = ["C901"]
+"ucm_migration_loader/places.py" = ["C901"]
+"ucm_migration_loader/publication_cleanup.py" = ["C901", "PLR0912"]
+"ucm_migration_loader/publication_jobs.py" = ["C901", "PLR0912"]
+"ucm_migration_loader/publication_prerequisites.py" = ["C901", "PLR0912"]
+"ucm_migration_loader/publication_shares.py" = ["C901"]
+"ucm_migration_loader/publication_worker.py" = ["C901", "PLR0912", "PLR0915"]
+"ucm_migration_loader/push.py" = ["C901", "PLR0912", "PLR0915"]
+"ucm_migration_loader/scope.py" = ["C901", "PLR0912", "PLR0915"]
+"ucm_migration_loader/shared_catalogs.py" = ["C901", "PLR0912", "PLR0915"]
+"ucm_migration_loader/source_inventory.py" = ["C901"]
+"ucm_migration_loader/sql_writer.py" = ["C901"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "tab"
+docstring-code-format = true
