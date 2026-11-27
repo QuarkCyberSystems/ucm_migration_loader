@@ -143,6 +143,42 @@ def report(run: str):
 	}
 
 
+@frappe.whitelist(methods=["POST"])
+def quality(run: str):
+	"""The run's data quality metrics, for the migration side to keep beside its own."""
+	from .ucm_migration_loader import run_overview
+
+	_publisher_or_operator(run)
+	record = frappe.get_doc(RUN, run)
+	if not run_overview.is_publication(json.loads(record.manifest_json)):
+		raise ValueError("Metrics are kept for sealed publications")
+	if not record.reconciliation_json:
+		raise ValueError("The run has no verification report yet")
+	document = run_overview.quality(record)
+	return {**document, "sha256": digest(document["metrics"])}
+
+
+@frappe.whitelist(methods=["POST"])
+def quality_received(run: str, sha256: str, rows: int, destination: str):
+	"""Record that the migration side stored the metrics it was given, so the run shows the hand-over."""
+	from .ucm_migration_loader import run_overview
+
+	current = quality(run)
+	if sha256 != current["sha256"] or int(rows) != len(current["metrics"]):
+		raise ValueError("The run has changed since these metrics were read")
+	handover = {
+		"rows": int(rows),
+		"sha256": sha256,
+		"destination": str(destination)[:140],
+		"by": frappe.session.user,
+		"on": str(frappe.utils.now_datetime()),
+	}
+	# the run itself has not changed: its metrics keep the time of its last step
+	frappe.db.set_value(RUN, run, "quality_json", json.dumps(handover), update_modified=False)
+	run_overview.refresh(run)
+	return handover
+
+
 def mark_activated(run):
 	frappe.db.set_value(
 		RUN,

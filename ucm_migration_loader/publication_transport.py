@@ -144,4 +144,8 @@ def receive(run: str):
 				out.write(data)
 		if path.stat().st_size != approval["size"] or digest.hexdigest() != approval["sha256"]:
 			raise ValueError("Transfer differs from the approved file")
-		return stage(str(path), run)
+		result = stage(str(path), run)
+		# the account that sent the file may read the status, the report and the metrics of this
+		# run, and of no other (api._publisher_or_operator)
+		frappe.db.set_value(api.RUN, run, "publishing_user", approval["publisher"], update_modified=False)
+		return result

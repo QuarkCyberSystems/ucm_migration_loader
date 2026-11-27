@@ -95,6 +95,46 @@ def send(call, manifest, batches, max_batches=None):
 	return call("status", run=run)
 
 
+def hand_over_quality(call, args):
+	"""Fetch a run's metrics, store them on the migration side, and tell the run where they went."""
+	from .ucm_migration_loader import data_quality
+
+	document = call("quality", run=args.run)
+	rows = document.get("metrics")
+	if (
+		document.get("format") != data_quality.FORMAT
+		or (document.get("run"), document.get("site")) != (args.run, args.site)
+		or not isinstance(rows, list)
+		or digest(rows) != document.get("sha256")
+	):
+		raise ValueError("Target returned metrics of another run or changed in transit")
+	destinations = []
+	if args.quality_out:
+		text = (
+			data_quality.as_csv(document)
+			if args.quality_out.suffix.lower() == ".csv"
+			else json.dumps(document, indent=2) + "\n"
+		)
+		args.quality_out.write_text(text)
+		destinations.append("file " + args.quality_out.name)
+	if args.quality_config:
+		config = json.loads(args.quality_config.read_text())
+		table = args.quality_table or data_quality.TABLE
+		with pymysql.connect(**config) as conn:
+			data_quality.store(conn, document, table, args.create_quality_table)
+		# the table's name only: where the database is stays on the migration side
+		destinations.append("table " + table)
+	receipt = call(
+		"quality_received",
+		run=args.run,
+		sha256=document["sha256"],
+		rows=len(rows),
+		destination=", ".join(destinations),
+	)
+	failed = sum(row["passed"] is False for row in rows)
+	return {"run": args.run, "state": document["state"], "metrics": len(rows), "failed": failed, **receipt}
+
+
 def main():
 	parser = argparse.ArgumentParser(description=__doc__)
 	aliases = {"activity-order": "upload-order", "freeze": "prepare"}
@@ -115,6 +155,7 @@ def main():
 			"status",
 			"report",
 			"reconcile",
+			"quality",
 			"verify",
 			"apply",
 			"pause",
@@ -162,7 +203,27 @@ def main():
 	parser.add_argument("--batch-size", type=int, default=100)
 	parser.add_argument("--batch-bytes", type=int, default=MAX_BYTES)
 	parser.add_argument("--expected", type=Path, help="Independently reviewed pilot rows for reconcile")
+	parser.add_argument(
+		"--quality-out",
+		type=Path,
+		help="Write the run's data quality metrics to this file (.csv, or JSON)",
+	)
+	parser.add_argument(
+		"--quality-config",
+		type=Path,
+		help="Private PyMySQL connection JSON of the data quality database",
+	)
+	parser.add_argument("--quality-table", default=None, help="Metrics table (default ucm_target_metric)")
+	parser.add_argument(
+		"--create-quality-table",
+		action="store_true",
+		help="Create the metrics table when it is absent",
+	)
 	args = parser.parse_args()
+	if (args.action == "quality") != bool(args.quality_out or args.quality_config):
+		parser.error("Use --quality-out or --quality-config with quality")
+	if (args.quality_table or args.create_quality_table) and not args.quality_config:
+		parser.error("--quality-table and --create-quality-table require --quality-config")
 	if args.ucm_version and args.action != "prepare":
 		parser.error("--ucm-version requires prepare")
 	if args.findings_out and args.action != "prepare":
@@ -445,6 +506,10 @@ def main():
 		if not result["matched"]:
 			print(json.dumps(result))
 			raise SystemExit(1)
+	elif args.action == "quality":
+		if not args.run:
+			parser.error("Supply --run")
+		result = hand_over_quality(call, args)
 	else:
 		if not args.run:
 			parser.error("Supply --run")
