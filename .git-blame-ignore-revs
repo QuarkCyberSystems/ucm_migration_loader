@@ -1,0 +1,4 @@
+# Formatting-only commits, left out of git blame (git config blame.ignoreRevsFile .git-blame-ignore-revs)
+
+# style: format with ruff and prettier
+20faa0c901d7b5c353f67dc00e0d5f14e4ea069d
