@@ -37,7 +37,6 @@
   },
   {
    "fieldname": "context_id",
-   "search_index": 1,
    "label": "Context Id",
    "fieldtype": "Data",
    "read_only": 1,
