@@ -1,24 +1,29 @@
 """The short way through a migration, with the commands the two operators type.
 
 	env/bin/python apps/ucm_migration_loader/tests/operator_flow.py --site <site> --delegation <code> \
-		--source-config <source.json> [--private-files <folder>] [--discard]
+		--source-config <source.json> [--private-files <folder>] [--desk <command>] [--discard]
 
 Run from the bench. The publishing operator's side is `ucm-push` with a settings file written for this run:
 `seal`, `sent`, `send`, `status` and `quality`, each as a process of its own, answering in sentences. The site
-operator's side is `bench ucm-migration approve` and `stage`. The site is reached over a loopback TLS listener,
-with a publishing account made for this run. Between staging and the metrics the delegation is loaded by the
+operator's side is `bench ucm-migration approve` and `stage`; with `--desk` the approval is given in the Desk by
+the command named (`e2e/site_operator.py`, with {run} and {code}, or {handoff} and {publisher}, in its arguments):
+the hand-off is proposed with `ucm-push propose` first, and the site's worker stages the file by itself once it
+has arrived. The site is reached over a loopback TLS listener, with a
+publishing account made for this run. Between staging and the metrics the delegation is loaded by the
 set-based route in this process. The run is left ready and hidden, or discarded with `--discard`.
 
-The delegation's context must exist on the site, locked, hidden and empty. Synthetic data only: the source is a
+The delegation's context is locked, hidden and empty on the site, or absent: the approval then makes it. Synthetic data only: the source is a
 site filled by the data generator.
 """
 
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import frappe
@@ -42,6 +47,42 @@ def typed(command: list[str], env: dict, cwd: Path, code: int = 0) -> str:
 	return "\n".join(line for line in done.stdout.splitlines() if not line.startswith("[")).strip()
 
 
+def _approve(args, said, env, bench, push, work, handoff, publisher, run, snapshot) -> None:
+	from set_based_queue import record
+
+	# the site operator approves the hand-off for the publishing account: in the Desk, or from the bench
+	if args.desk:
+		# the publishing operator proposes the hand-off, and gives the check code to who approves
+		said["propose"] = typed([push, "propose", snapshot, "--text"], env, work)
+		expect("Proposed to the site as MIG-" in said["propose"], said["propose"])
+		expect(record(run).state == "Proposed", f"the proposed run is {record(run).state}")
+		code = said["propose"].split("check code yourself: ")[1].split()[0]
+		said["status, proposed"] = typed([push, "status", snapshot, "--text"], env, work)
+		fill = {"handoff": handoff, "publisher": publisher, "run": run, "code": code}
+		said["approve"] = typed([part.format(**fill) for part in shlex.split(args.desk)], env, BENCH)
+		expect("Approved in the Desk" in said["approve"], said["approve"])
+	else:
+		said["approve"] = typed([*bench, "approve", str(handoff), "--publisher", publisher], env, BENCH)
+		expect("Approved run" in said["approve"], said["approve"])
+	expect(record(run).state == "Awaiting publication", f"the approved run is {record(run).state}")
+	said["status, approved"] = typed([push, "status", snapshot, "--text"], env, work)
+
+
+def _stage(args, said, env, bench, handoff, run) -> None:
+	from set_based_queue import record
+
+	# the site stages the arrived file by itself; from the bench, the site operator stages it by hand too
+	if args.desk:
+		deadline = time.monotonic() + 180
+		while record(run).state == "Awaiting publication" and time.monotonic() < deadline:
+			time.sleep(1)
+		expect(record(run).state == "Publication staged", f"the worker left the run {record(run).state}")
+		said["stage"] = f"staged by the site's worker as {record(run).display_id}"
+	else:
+		said["stage"] = typed([*bench, "stage", str(handoff)], env, BENCH)
+		expect("Staged as MIG-" in said["stage"], said["stage"])
+
+
 def flow(args) -> dict:
 	from set_based_queue import connect, record
 	from transport import publisher_identity, tls_site
@@ -56,6 +97,11 @@ def flow(args) -> dict:
 		publisher_identity() as (publisher, token),
 	):
 		work = Path(folder)
+		if args.desk:
+			# an account that proposes its hand-offs holds the publishers' role
+			frappe.get_doc("User", publisher).add_roles("Migration Publisher")
+			# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: a rehearsal's account, which the site's own processes must see
+			frappe.db.commit()
 		(work / "token").write_text(token + "\n")
 		(work / "token").chmod(0o600)
 		lines = {
@@ -75,7 +121,8 @@ def flow(args) -> dict:
 		bench = ["bench", "--site", args.site, "ucm-migration"]
 
 		# the publishing operator seals; the settings file is found from the working folder
-		said["seal"] = typed([push, "seal", args.delegation, "--text"], env, work)
+		named = ["--snapshot", args.snapshot] if args.snapshot else []
+		said["seal"] = typed([push, "seal", args.delegation, *named, "--text"], env, work)
 		(sealed,) = (work / "publications").iterdir()
 		snapshot, handoff = sealed.name, sealed / "handoff.json"
 		run = json.loads(handoff.read_text())["run"]
@@ -84,9 +131,7 @@ def flow(args) -> dict:
 		)
 		expect(sealed.stat().st_mode & 0o777 == 0o700, "the publication's folder is not private")
 
-		# the site operator approves the hand-off for the publishing account
-		said["approve"] = typed([*bench, "approve", str(handoff), "--publisher", publisher], env, BENCH)
-		expect("Approved run" in said["approve"], said["approve"])
+		_approve(args, said, env, bench, push, work, handoff, publisher, run, snapshot)
 		early = typed([*bench, "stage", str(handoff)], env, BENCH, code=1)
 		expect("has not arrived completely" in early, f"an empty transfer was staged: {early}")
 
@@ -95,9 +140,7 @@ def flow(args) -> dict:
 		said["send"] = typed([push, "send", snapshot, "--text"], env, work)
 		expect(said["send"].startswith("Sent:"), said["send"])
 
-		# the site operator stages
-		said["stage"] = typed([*bench, "stage", str(handoff)], env, BENCH)
-		expect("Staged as MIG-" in said["stage"], said["stage"])
+		_stage(args, said, env, bench, handoff, run)
 		said["status, staged"] = typed([push, "status", "--text"], env, sealed)
 		expect("Staged: checked, nothing written yet" in said["status, staged"], said["status, staged"])
 
@@ -153,6 +196,10 @@ def main() -> None:
 		"--source-config", type=Path, required=True, help="PyMySQL connection JSON of the source"
 	)
 	parser.add_argument("--private-files", type=Path, help="The source's private files, for the pictures")
+	parser.add_argument(
+		"--desk", help="Approve in the Desk with this command; the worker then stages the file"
+	)
+	parser.add_argument("--snapshot", help="The snapshot's name, where today's was used on this site before")
 	parser.add_argument("--discard", action="store_true", help="Discard the run at the end")
 	parser.add_argument("--evidence", type=Path, help="Write the result here as well")
 	args = parser.parse_args()
