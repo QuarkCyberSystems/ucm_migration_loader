@@ -337,6 +337,8 @@ No controller runs for a copied row. A rule of a controller that is not in `veri
 
 Both loads were compared row by row and field by field over every table of the publication. All 242,786 rows are on both sides and equal, except the file name of the 10,000 private pictures (`File.file_url` and `Person.person_picture`), which hold the same bytes. The row counts of all 504 tables of the site changed by the same amounts. The document route's own reconciliation of every record passed over the rows the set-based route had written (23.9 min).
 
+The document route's time comes from its load of the same delegation on the same site a week before the set-based runs; it was not repeated beside them, and it ran in one worker. Carried by the bench's own worker the set-based route took 4.0 min (see Through the queue, below), so read the difference as ten to twenty times, not as the two figures.
+
 **A larger delegation, and shares.** Two delegations of the 50,000-person generator source were loaded on the same site through the bench's own worker, under keys of their own (see [Re-keyed generator sources](#re-keyed-generator-sources)). Each figure is one run.
 
 | | Small delegation | Large delegation |
