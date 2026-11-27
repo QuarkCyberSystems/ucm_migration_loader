@@ -916,11 +916,16 @@ def _conclude(run: str, sealed: _Sealed, last: int, *, ticket: int | None = None
 	counted = timed("count", lambda: stored_counts(context, manifest))
 	rules = timed("integrity rules", lambda: integrity(context, [dt for dt, n in counted.items() if n]))
 	access = Counter()
-	for _sequence, _sha, payload in sealed.batches(last):
+	for sequence, _sha, payload in sealed.batches(last):
 		items = json.loads(payload)
 		if items[0]["doctype"] == "Record Share":
-			for item in items:
-				access[check_share(item["row"], context)] += 1
+			for position, item in enumerate(items, 1):
+				try:
+					access[check_share(item["row"], context)] += 1
+				except Exception as exc:
+					# a share UCM's rules no longer allow stops the load: its place goes to the finding
+					exc.migration_location = (sequence, position, "Record Share")
+					raise
 	ctx, record = lock_run(run)
 	if not _mine(record, ticket) or (record.applied or 0) != last or (record.reconcile_cursor or 0) != last:
 		frappe.db.rollback()
