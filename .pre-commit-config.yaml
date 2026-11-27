@@ -1,4 +1,4 @@
-# dist/ holds a built wheel and a patch for Frappe: no hook rewrites them
+# dist/ holds a patch for Frappe: no hook rewrites it
 exclude: 'node_modules|.git|^dist/'
 default_stages: [pre-commit]
 fail_fast: false
