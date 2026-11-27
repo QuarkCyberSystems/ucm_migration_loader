@@ -682,6 +682,13 @@ def _record_rules(doctype: str, rules: dict, values: dict) -> None:
 			f"{place} and not exists (select 1 from `tabPlace` p where p.name = r.activity_place_tech_id"
 			" and p.place_type_tech_id <=> r.activity_place_type_tech_id)"
 		)
+	if doctype == "Person Relationship":
+		# PersonRelationship.validate: a person's relationship to another person is one row, whatever the
+		# relationship; the relationship the other way round is another row
+		rules["related person: this person's relationship to them is recorded twice"] = (
+			"exists (select 1 from `tabPerson Relationship` m where m.person_tech_id = r.person_tech_id"
+			" and m.person_related_tech_id = r.person_related_tech_id and m.name <> r.name)"
+		)
 	if doctype == "Activity Detail":
 		from ucm.ucm.doctype.activity_detail.activity_detail import BY, LOCKED, ON
 
