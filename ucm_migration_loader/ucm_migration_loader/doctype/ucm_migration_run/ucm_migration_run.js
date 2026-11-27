@@ -1,10 +1,16 @@
+/* global ROLE, STATE, SET_BASED, BY_DOCTYPE, METHOD, REFUSED, ask, number, safe, megabytes, approvable,
+   handoff_summary, context_fields */
+// The names and the helpers above are declared in public/js/migration_run_common.js, which Frappe adds to this
+// script.
+
 frappe.ui.form.on("UCM Migration Run", {
 	refresh(frm) {
 		if (frm.is_new()) return;
 		// a run is changed by its actions only, never by editing its fields
 		frm.disable_save();
 		const state = frm.doc.state;
-		if (!["Rejected", AWAITING, PROPOSED].includes(state)) show_batch_progress(frm);
+		if (![STATE.REJECTED, STATE.AWAITING, STATE.PROPOSED].includes(state))
+			show_batch_progress(frm);
 		show_write_route(frm);
 		show_overview(frm);
 		frm.add_custom_button(__("View batches"), () =>
@@ -12,119 +18,130 @@ frappe.ui.form.on("UCM Migration Run", {
 		);
 		const group = __("Migration");
 		frm.add_custom_button(__("Refresh progress"), () => frm.reload_doc(), group);
+		show_share_lists(frm, group);
+		// the server asks the same of every action: who only reads a run is offered none
+		if (frappe.user.has_role(ROLE)) show_actions(frm, group);
+	},
+});
 
-		function action(label, method, confirmation) {
-			const submit = async () => {
-				await frappe.call({
-					method: "ucm_migration_loader.api." + method,
-					args: { run: frm.doc.name },
-					freeze: true,
-				});
-				await frm.reload_doc();
-				if (method === "activate") follow_activation(frm);
-			};
-			const ask = () => (confirmation ? frappe.confirm(__(confirmation), submit) : submit());
-			frm.add_custom_button(__(label), ask, group);
-			return ask;
-		}
+// The actions a run's state allows. The labels and the questions are given translated.
+function show_actions(frm, group) {
+	const state = frm.doc.state;
 
-		if (state === "Publication staged" && !frm.doc.dispatch_id && !frm.doc.applied) {
+	function action(label, method, question) {
+		const submit = async () => {
+			const answer = await ask("ucm_migration_loader.api." + method, { run: frm.doc.name });
+			// refused or done, the run may have moved: show where it stands
+			await frm.reload_doc();
+			if (answer !== REFUSED && method === "activate") follow_activation(frm);
+		};
+		const run = () => (question ? frappe.confirm(question, submit) : submit());
+		frm.add_custom_button(label, run, group);
+		return run;
+	}
+
+	if (state === STATE.STAGED) {
+		// the route is chosen before the first batch is written
+		if (!frm.doc.dispatch_id && !frm.doc.applied) {
 			frm.add_custom_button(
 				__("Configure write routes"),
 				() => configure_write_routes(frm),
 				group
 			);
 		}
-		if (state === "Publication staged") action("Apply hidden batches", "apply");
-		if (state === "Publication applying") {
-			action("Pause after current batch", "pause");
-			action("Resume from last receipt", "apply");
-		}
-		if (state === "Publication paused") action("Resume from last receipt", "apply");
-		if (state === "Publication ready") {
-			const activate = action(
-				"Activate delegation",
-				"activate",
-				"Open this delegation to its authorized users after reviewing reconciliation?"
-			);
-			// the decision the run waits for, beside the menu that holds every action
-			frm.add_custom_button(__("Activate delegation"), activate).addClass("btn-primary");
-		}
-		if (state === "Publication cleaning") {
-			action("Resume cleanup", "discard");
-		} else if (state === PROPOSED) {
-			action(
-				"Decline",
-				"discard",
-				"Decline this proposed hand-off? No file will be accepted for it."
-			);
-			if (frappe.user.has_role("Migration Admin")) {
-				// the decision this run waits for
-				frm.add_custom_button(__("Approve hand-off"), () =>
-					approve_proposed(frm)
-				).addClass("btn-primary");
-			}
-		} else if (state === AWAITING) {
-			action(
-				"Withdraw approval",
-				"discard",
+		action(__("Apply hidden batches"), "apply");
+	}
+	if (state === STATE.APPLYING) {
+		action(__("Pause after current batch"), "pause");
+		action(__("Resume from last receipt"), "apply");
+	}
+	if (state === STATE.PAUSED) action(__("Resume from last receipt"), "apply");
+	if (state === STATE.READY) {
+		const activate = action(
+			__("Activate delegation"),
+			"activate",
+			__("Open this delegation to its authorized users after reviewing reconciliation?")
+		);
+		// the decision the run waits for, beside the menu that holds every action
+		frm.add_custom_button(__("Activate delegation"), activate).addClass("btn-primary");
+	}
+	if (state === STATE.CLEANING) {
+		action(__("Resume cleanup"), "discard");
+	} else if (state === STATE.PROPOSED) {
+		action(
+			__("Decline"),
+			"discard",
+			__("Decline this proposed hand-off? No file will be accepted for it.")
+		);
+		// the decision this run waits for
+		frm.add_custom_button(__("Approve hand-off"), () => approve_proposed(frm)).addClass(
+			"btn-primary"
+		);
+	} else if (state === STATE.AWAITING) {
+		action(
+			__("Withdraw approval"),
+			"discard",
+			__(
 				"Withdraw the approval of this publication? What has arrived of its file is removed."
-			);
-		} else if (!["Activated", "Discarded", "Rejected"].includes(state)) {
-			action(
-				"Discard run",
-				"discard",
+			)
+		);
+	} else if (![STATE.ACTIVATED, STATE.DISCARDED, STATE.REJECTED].includes(state)) {
+		action(
+			__("Discard run"),
+			"discard",
+			__(
 				"Discard this run and remove its applied records? The audit receipts will be retained."
-			);
-		}
-		if ([AWAITING, "Rejected"].includes(state)) {
-			// staging follows the file's arrival by itself; this asks for it again, after a failure or a refusal
-			frm.add_custom_button(__("Stage now"), () => stage_now(frm), group);
-		}
-		if (frm.doc.reconciliation_json) {
-			const report = JSON.parse(frm.doc.reconciliation_json);
-			if (report.shares_held_at_activation > 0) {
-				frm.add_custom_button(
-					__("Historical share receipts"),
-					() =>
-						frappe.set_route("List", "UCM Migration Held Share", {
-							migration_run: frm.doc.name,
-						}),
-					group
-				);
-			}
-			if (report.inbound_share_outcomes?.Review > 0) {
-				frm.add_custom_button(
-					__("Shares requiring review"),
-					() =>
-						frappe.set_route("List", "UCM Migration Held Share", {
-							release_run: frm.doc.name,
-							state: "Review",
-						}),
-					group
-				);
-			}
-			frm.add_custom_button(
-				__("Download report"),
-				async () => {
-					const { message } = await frappe.call({
-						method: "ucm_migration_loader.api.report",
-						args: { run: frm.doc.name },
-					});
-					const url = URL.createObjectURL(
-						new Blob([JSON.stringify(message, null, 2)], { type: "application/json" })
-					);
-					const link = document.createElement("a");
-					link.href = url;
-					link.download = "ucm-migration-" + frm.doc.name + ".json";
-					link.click();
-					setTimeout(() => URL.revokeObjectURL(url), 1000);
-				},
-				group
-			);
-		}
-	},
-});
+			)
+		);
+	}
+	if ([STATE.AWAITING, STATE.REJECTED].includes(state)) {
+		// staging follows the file's arrival by itself; this asks for it again, after a failure or a refusal
+		frm.add_custom_button(__("Stage now"), () => stage_now(frm), group);
+	}
+	if (frm.doc.reconciliation_json) {
+		frm.add_custom_button(__("Download report"), () => download_report(frm), group);
+	}
+}
+
+// The lists of the shares this run held back, for who reads the run.
+function show_share_lists(frm, group) {
+	if (!frm.doc.reconciliation_json) return;
+	const report = JSON.parse(frm.doc.reconciliation_json);
+	if (report.shares_held_at_activation > 0) {
+		frm.add_custom_button(
+			__("Historical share receipts"),
+			() =>
+				frappe.set_route("List", "UCM Migration Held Share", {
+					migration_run: frm.doc.name,
+				}),
+			group
+		);
+	}
+	if (report.inbound_share_outcomes?.Review > 0) {
+		frm.add_custom_button(
+			__("Shares requiring review"),
+			() =>
+				frappe.set_route("List", "UCM Migration Held Share", {
+					release_run: frm.doc.name,
+					state: "Review",
+				}),
+			group
+		);
+	}
+}
+
+async function download_report(frm) {
+	const report = await ask("ucm_migration_loader.api.report", { run: frm.doc.name }, false);
+	if (report === REFUSED) return;
+	const url = URL.createObjectURL(
+		new Blob([JSON.stringify(report, null, 2)], { type: "application/json" })
+	);
+	const link = document.createElement("a");
+	link.href = url;
+	link.download = "ucm-migration-" + frm.doc.name + ".json";
+	link.click();
+	setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 // Whether this run's form is the page in front of the user: a timer left by another form does nothing.
 function showing(frm) {
@@ -135,50 +152,15 @@ function showing(frm) {
 // Approve a hand-off its publishing account proposed. The approver types the check code the publishing operator
 // gave them: it is the short form of the file's fingerprint, which this dialog does not show.
 async function approve_proposed(frm) {
-	const METHOD =
-		"ucm_migration_loader.ucm_migration_loader.doctype.ucm_migration_run.ucm_migration_run.";
-	const { message: found } = await frappe.call({
-		method: METHOD + "inspect_proposed",
-		args: { run: frm.doc.name },
-	});
-	const about = found.delegation || {};
-	const named = found.context.exists
-		? `${found.context.name} (${found.context.code})`
-		: about.code
-		? `${about.name} (${about.code})`
-		: found.context.id;
-	let context, color;
-	if (found.context.problem) [context, color] = [found.context.problem, "text-danger"];
-	else if (found.context.exists)
-		[context, color] = [
-			__("Locked, hidden and empty: ready for this publication."),
-			"text-success",
-		];
-	else
-		[context, color] = [
-			__("This site has no context for it yet. It is made below, locked and hidden."),
-			"text-muted",
-		];
-	const rows = [
-		[__("Delegation"), safe(named)],
-		[__("Snapshot"), safe(found.snapshot)],
-		[__("Rows"), __("{0} in {1} batches", [number(found.rows), number(found.batches)])],
-		[__("Sealed file"), megabytes(found.bytes)],
-		[__("Proposed by"), safe(found.proposed_by)],
-		[__("Context"), `<span class="${color}">${safe(context)}</span>`],
-	];
+	const found = await ask(METHOD + "inspect_proposed", { run: frm.doc.name }, false);
+	if (found === REFUSED) return;
 	const dialog = new frappe.ui.Dialog({
 		title: __("Approve the hand-off of {0}", [found.display_id]),
 		fields: [
 			{
 				fieldname: "summary",
 				fieldtype: "HTML",
-				options: `<table class="table table-borderless table-sm">${rows
-					.map(
-						([label, value]) =>
-							`<tr><td class="text-muted" style="width: 8rem">${label}</td><td>${value}</td></tr>`
-					)
-					.join("")}</table>`,
+				options: handoff_summary(found, [__("Proposed by"), safe(found.proposed_by)]),
 			},
 			{
 				fieldname: "check_code",
@@ -189,43 +171,18 @@ async function approve_proposed(frm) {
 					"The code the publishing operator's command gave them, as they told it to you. It ties your approval to their sealed file."
 				),
 			},
-			{
-				fieldname: "context_section",
-				fieldtype: "Section Break",
-				label: __("The delegation's context"),
-				hidden: found.context.exists ? 1 : 0,
-			},
-			{
-				fieldname: "context_code",
-				fieldtype: "Data",
-				label: __("Code"),
-				default: about.code,
-			},
-			{ fieldname: "context_column", fieldtype: "Column Break" },
-			{
-				fieldname: "context_name",
-				fieldtype: "Data",
-				label: __("Name"),
-				default: about.name,
-			},
+			...context_fields(found),
 		],
 		primary_action_label: __("Approve"),
 		primary_action: async (values) => {
-			try {
-				await frappe.call({
-					method: METHOD + "approve_proposed",
-					args: {
-						run: frm.doc.name,
-						check_code: values.check_code,
-						context_code: found.context.exists ? null : values.context_code,
-						context_name: found.context.exists ? null : values.context_name,
-					},
-					freeze: true,
-				});
-			} catch {
-				// refused, and said so by the server's message: the dialog stays for another try
-				return;
-			}
+			const approved = await ask(METHOD + "approve_proposed", {
+				run: frm.doc.name,
+				check_code: values.check_code,
+				context_code: found.context.exists ? null : values.context_code,
+				context_name: found.context.exists ? null : values.context_name,
+			});
+			// refused: the dialog stays for another try
+			if (approved === REFUSED) return;
 			dialog.hide();
 			frappe.show_alert({
 				message: __("Approved. It is staged when its file has arrived."),
@@ -234,23 +191,14 @@ async function approve_proposed(frm) {
 			await frm.reload_doc();
 		},
 	});
-	if (found.context.problem) dialog.get_primary_btn().prop("disabled", true);
+	if (!approvable(found)) dialog.get_primary_btn().prop("disabled", true);
 	dialog.show();
 }
 
 // Ask for the staging of the arrived file, and say how it went.
 async function stage_now(frm) {
-	let result;
-	try {
-		({ message: result } = await frappe.call({
-			method: "ucm_migration_loader.ucm_migration_loader.doctype.ucm_migration_run.ucm_migration_run.stage_now",
-			args: { run: frm.doc.name },
-			freeze: true,
-		}));
-	} catch {
-		// the server's message says why
-		return;
-	}
+	const result = await ask(METHOD + "stage_now", { run: frm.doc.name });
+	if (result === REFUSED) return;
 	const said = {
 		staged: [__("Staged: the file is checked, nothing is written yet."), "green"],
 		refused: [__("Refused: the run says what differs."), "red"],
@@ -276,7 +224,7 @@ function follow_activation(frm) {
 		if (cur_dialog) return;
 		await frm.reload_doc();
 		// done, or refused with a finding; a worker that never answers is not waited for all day
-		if (frm.doc.state !== "Publication ready" || frm.doc.finding || Date.now() > until)
+		if (frm.doc.state !== STATE.READY || frm.doc.finding || Date.now() > until)
 			clearInterval(frm.ucm_activation);
 	}, 3000);
 }
@@ -295,9 +243,9 @@ function show_batch_progress(frm) {
 	const remaining = total - applied;
 	const counts = [applied, total, remaining].map((n) => n.toLocaleString());
 	let message = __("{0} of {1} batches finished · {2} remaining", counts);
-	if (frm.doc.state === "Publication ready" && remaining > 0) {
+	if (frm.doc.state === STATE.READY && remaining > 0) {
 		message += " · " + __("Remaining batches run at activation.");
-	} else if (["Publication cleaning", "Discarded"].includes(frm.doc.state)) {
+	} else if ([STATE.CLEANING, STATE.DISCARDED].includes(frm.doc.state)) {
 		message = __("{0} of {1} batches currently applied", counts);
 	}
 	if (frm.doc.worker_phase && frm.doc.worker_seen) {
@@ -317,33 +265,19 @@ function show_batch_progress(frm) {
 	);
 }
 
-const SET_BASED = "Set-based SQL";
-
-// The route of a run: the set-based route for all of it, or a route per DocType.
-function write_route(frm) {
-	let plan;
-	try {
-		plan = JSON.parse(frm.doc.write_plan_json || "{}");
-	} catch {
-		return null;
-	}
-	const routes = [...new Set(Object.values(plan))];
-	if (!routes.length) return null;
-	return routes.length === 1 ? routes[0] : "by DocType";
-}
-
+// The route the server keeps for the run: one route for the delegation, or routes chosen per DocType. A run that
+// has no file yet has none.
 function show_write_route(frm) {
-	const route = write_route(frm);
-	if (!route || !frm.doc.state.startsWith("Publication")) return;
-	const label = route === "by DocType" ? __("chosen per DocType") : __(route);
+	const route = frm.doc.write_route;
+	if (!route) return;
+	const label = route === BY_DOCTYPE ? __("chosen per DocType") : __(route);
 	frm.dashboard.set_headline(__("Write route: {0}", [label]));
 }
 
 async function configure_write_routes(frm) {
-	const method = "ucm_migration_loader.write_routes.";
-	const args = { run: frm.doc.name };
-	const { message: rows } = await frappe.call({ method: method + "options", args });
-	const per_doctype = "By DocType";
+	const run = frm.doc.name;
+	const rows = await ask(METHOD + "route_options", { run }, false);
+	if (rows === REFUSED) return;
 	const whole = rows.length && rows.every((row) => row.selected === SET_BASED);
 	const dialog = new frappe.ui.Dialog({
 		title: __("Configure write routes"),
@@ -353,10 +287,10 @@ async function configure_write_routes(frm) {
 				label: __("Route for the delegation"),
 				fieldtype: "Select",
 				options: [
-					{ value: per_doctype, label: __("Chosen per DocType") },
+					{ value: BY_DOCTYPE, label: __("Chosen per DocType") },
 					{ value: SET_BASED, label: __("Set-based SQL") },
 				],
-				default: whole ? SET_BASED : per_doctype,
+				default: whole ? SET_BASED : BY_DOCTYPE,
 				description: __(
 					"Set-based SQL writes every DocType in sets, then derives and verifies the whole delegation before it can be activated."
 				),
@@ -378,25 +312,19 @@ async function configure_write_routes(frm) {
 		],
 		primary_action_label: __("Save routes"),
 		async primary_action(values) {
-			if (values.whole === SET_BASED) {
-				await frappe.call({
-					method: method + "select",
-					args: { ...args, route: SET_BASED },
-					freeze: true,
-				});
-			} else {
-				const routes = Object.fromEntries(
-					rows.map((row, i) => [
-						row.doctype,
-						row.sql_allowed ? values["route_" + i] : "Document API",
-					])
-				);
-				await frappe.call({
-					method: method + "configure",
-					args: { ...args, routes },
-					freeze: true,
-				});
-			}
+			const chosen =
+				values.whole === SET_BASED
+					? { route: SET_BASED }
+					: {
+							routes: Object.fromEntries(
+								rows.map((row, i) => [
+									row.doctype,
+									row.sql_allowed ? values["route_" + i] : "Document API",
+								])
+							),
+					  };
+			// refused: the dialog stays, and the server's message says why
+			if ((await ask(METHOD + "choose_routes", { run, ...chosen })) === REFUSED) return;
 			dialog.hide();
 			await frm.reload_doc();
 		},
@@ -449,17 +377,6 @@ const DERIVED = {
 	"share facts": __("Share facts"),
 	"latest state marks": __("Latest state marks"),
 };
-const AWAITING = "Awaiting publication";
-const PROPOSED = "Proposed";
-const RUNNING = ["Publication applying", "Publication cleaning", AWAITING];
-const megabytes = (bytes) =>
-	(Number(bytes || 0) / 1e6).toLocaleString(undefined, {
-		maximumFractionDigits: 1,
-		minimumFractionDigits: 1,
-	}) + " MB";
-
-const number = (n) => Number(n || 0).toLocaleString();
-const safe = (text) => frappe.utils.escape_html(String(text ?? ""));
 const pill = ([label, color]) =>
 	`<span class="indicator-pill ${color} no-indicator-dot">${safe(label)}</span>`;
 
@@ -532,7 +449,7 @@ function step_detail(step, data) {
 	const set_based = data.facts.route === SET_BASED;
 	if (step.step === "stage") {
 		if (step.status === "failed") return refusal(facts);
-		if (data.state === PROPOSED) {
+		if (data.state === STATE.PROPOSED) {
 			return __(
 				"Proposed by {0} on {1}: a sealed file of {2}. Waiting for a Migration Admin's approval.",
 				[
@@ -542,7 +459,7 @@ function step_detail(step, data) {
 				]
 			);
 		}
-		if (data.state === AWAITING) {
+		if (data.state === STATE.AWAITING) {
 			return __("Approved by {0} on {1}, to be sent by {2}. {3} of {4} arrived.", [
 				facts.by,
 				frappe.datetime.str_to_user(facts.on),
@@ -671,7 +588,7 @@ function records_html(data) {
 		let target = "",
 			difference = "";
 		if (row.stored === null) {
-			if (row.deferred && data.state !== "Rejected")
+			if (row.deferred && data.state !== STATE.REJECTED)
 				target = `<span class="text-muted">${__("held until activation")}</span>`;
 		} else {
 			counted = true;
@@ -732,7 +649,7 @@ function show_intro(frm, data) {
 	if (data.stalled) {
 		// the job's process was killed or its worker went down: the run keeps its state, and nothing works on it
 		const text =
-			state === "Publication cleaning"
+			state === STATE.CLEANING
 				? __(
 						"No job is working on this discard: its worker stopped. Choose Migration, Resume cleanup."
 				  )
@@ -743,7 +660,7 @@ function show_intro(frm, data) {
 		frm.set_intro(text, "red");
 		return;
 	}
-	if (state === PROPOSED) {
+	if (state === STATE.PROPOSED) {
 		frm.set_intro(
 			__(
 				"The publishing account proposes this publication of {0}. Nothing is accepted for it until a Migration Admin approves the hand-off, with the check code the publishing operator gives them.",
@@ -753,7 +670,7 @@ function show_intro(frm, data) {
 		);
 		return;
 	}
-	if (state === AWAITING) {
+	if (state === STATE.AWAITING) {
 		if (data.finding) frm.set_intro(data.finding, "orange");
 		else {
 			frm.set_intro(
@@ -766,7 +683,7 @@ function show_intro(frm, data) {
 		}
 		return;
 	}
-	if (state === "Publication ready") {
+	if (state === STATE.READY) {
 		frm.set_intro(
 			__(
 				"All checks passed. {0} is hidden from users until it is activated. Activation is recorded with your name and the time.",
@@ -774,7 +691,7 @@ function show_intro(frm, data) {
 			),
 			"blue"
 		);
-	} else if (state === "Publication paused" && data.findings.length) {
+	} else if (state === STATE.PAUSED && data.findings.length) {
 		const text =
 			data.findings.length === 1
 				? __(
@@ -786,11 +703,11 @@ function show_intro(frm, data) {
 						[data.findings.length, who]
 				  );
 		frm.set_intro(text, "red");
-	} else if (["Publication paused", "Rejected"].includes(state) && data.finding) {
-		frm.set_intro(data.finding, state === "Rejected" ? "red" : "orange");
-	} else if (state === "Activated") {
+	} else if ([STATE.PAUSED, STATE.REJECTED].includes(state) && data.finding) {
+		frm.set_intro(data.finding, state === STATE.REJECTED ? "red" : "orange");
+	} else if (state === STATE.ACTIVATED) {
 		frm.set_intro(__("{0} is open to its users.", [who]), "green");
-	} else if (state === "Discarded") {
+	} else if (state === STATE.DISCARDED) {
 		frm.set_intro(
 			__("This run was discarded. Its rows are removed and its receipts are kept.")
 		);
@@ -800,11 +717,11 @@ function show_intro(frm, data) {
 async function show_overview(frm) {
 	const field = frm.get_field("overview");
 	if (!field) return;
-	const { message: data } = await frappe.call({
-		method: "ucm_migration_loader.ucm_migration_loader.doctype.ucm_migration_run.ucm_migration_run.overview",
-		args: { run: frm.doc.name },
-	});
-	if (!data || !data.publication) {
+	const run = frm.doc.name;
+	const data = await ask(METHOD + "overview", { run }, false);
+	// one form serves every run: an answer that comes after the user opened another run is not shown on it
+	if (frm.doc.name !== run) return;
+	if (data === REFUSED || !data || !data.publication) {
 		field.$wrapper.empty();
 		return;
 	}
@@ -821,9 +738,11 @@ async function show_overview(frm) {
 			window.open(data.quality_url, "_blank", "noopener")
 		);
 	}
-	// a load at work: show its progress without a click, while this form stays open
+	// a run at work, or waiting for its file: show its progress without a click, while this form stays open.
+	// A run whose job stopped is not at work: its notice names the action that resumes it.
 	clearTimeout(frm.ucm_refresh);
-	if (RUNNING.includes(data.state)) {
+	const at_work = [STATE.APPLYING, STATE.CLEANING, STATE.AWAITING].includes(data.state);
+	if (at_work && !data.stalled) {
 		frm.ucm_refresh = setTimeout(() => {
 			if (showing(frm) && !cur_dialog) frm.reload_doc();
 		}, 10000);

@@ -502,3 +502,48 @@ def test_both_ways_of_sealing_use_the_same_batches(sealing):
 	publishing.seal(conf, "DEMO01")
 	assert calls["freeze"]["size"] == contract.MAX_PUBLICATION_BATCH_DOCUMENTS
 	assert contract.TRANSFER_CHUNK == 512 * 1024
+
+
+def test_what_the_site_says_with_a_refusal_is_shown(host, monkeypatch):
+	monkeypatch.setenv("UCM_MIGRATION_TOKEN", "key:secret")
+
+	class Refused:
+		status_code = 417
+
+		def json(self):
+			said = {"message": "Cannot apply a run in <b>Activated</b>.", "title": "Not done"}
+			return {"exception": "ValidationError", "_server_messages": json.dumps([json.dumps(said)])}
+
+	class Session:
+		def mount(self, *_args):
+			pass
+
+		def post(self, *_args, **_options):
+			return Refused()
+
+	monkeypatch.setattr(push.requests, "Session", Session)
+	with pytest.raises(
+		SystemExit, match=r"report returned HTTP 417: Cannot apply a run in Activated\. Check"
+	):
+		publishing.main(["report", "DEMO01-2026-01-02", "--json"])
+
+
+def test_a_refusal_without_a_message_names_its_status(host, monkeypatch):
+	monkeypatch.setenv("UCM_MIGRATION_TOKEN", "key:secret")
+
+	class Refused:
+		status_code = 403
+
+		def json(self):
+			raise ValueError("no JSON")
+
+	class Session:
+		def mount(self, *_args):
+			pass
+
+		def post(self, *_args, **_options):
+			return Refused()
+
+	monkeypatch.setattr(push.requests, "Session", Session)
+	with pytest.raises(SystemExit, match=r"status returned HTTP 403\. Check the run"):
+		publishing.main(["status", "DEMO01-2026-01-02", "--json"])

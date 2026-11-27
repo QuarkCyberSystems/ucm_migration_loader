@@ -13,7 +13,14 @@ from frappe.tests import IntegrationTestCase
 
 from ucm_migration_loader import api, constants, operator, publication_transport
 from ucm_migration_loader.commands import said
-from ucm_migration_loader.tests.utils import hand_off, hidden_context, make_account, remove_files, seal
+from ucm_migration_loader.tests.utils import (
+	hand_off,
+	hidden_context,
+	make_account,
+	make_run,
+	remove_files,
+	seal,
+)
 from ucm_migration_loader.ucm_migration_loader import run_overview
 from ucm_migration_loader.ucm_migration_loader.doctype.ucm_migration_run import ucm_migration_run as desk
 
@@ -548,3 +555,35 @@ class TestDeskCalls(OperatorCase):
 		self.assertEqual(desk.overview(run)["state"], AWAITING)
 		frappe.set_user(self.publisher)
 		self.assertRaises(frappe.PermissionError, desk.overview, run)
+
+	def test_the_write_routes_of_a_staged_run_are_chosen_from_the_desk(self):
+		run = make_run(state="Publication staged", route="Document API", context=self.context).name
+		offered = desk.route_options(run)
+		published = {row["doctype"] for row in offered}
+		self.assertTrue({"Person", "Activity"} <= published)
+		self.assertEqual({row["selected"] for row in offered}, {"Document API"})
+		self.assertEqual(desk.choose_routes(run, route="Set-based SQL")["route"], "Set-based SQL")
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "write_route"), "Set-based SQL")
+		desk.choose_routes(
+			run, routes={**dict.fromkeys(published, "Document API"), "Person": "Validated bulk SQL"}
+		)
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "write_route"), "By DocType")
+
+	def test_a_refusal_reaches_the_desk_as_a_message(self):
+		"""Not as a server error without a sentence."""
+		run = make_run(state="Publication applying", context=self.context).name
+		frappe.db.set_value(constants.RUN, run, "applied", 1)
+		self.assertRaisesRegex(frappe.ValidationError, "locked once apply starts", desk.route_options, run)
+		self.assertRaisesRegex(
+			frappe.ValidationError, "locked once apply starts", desk.choose_routes, run, "Set-based SQL"
+		)
+		activated = make_run(state="Activated", context=self.context).name
+		self.assertRaisesRegex(
+			frappe.ValidationError, "Cannot apply a run in Activated", api.apply, activated
+		)
+
+	def test_only_a_migration_admin_chooses_routes(self):
+		run = make_run(state="Publication staged", route="Document API", context=self.context).name
+		frappe.set_user(self.publisher)
+		self.assertRaises(frappe.PermissionError, desk.route_options, run)
+		self.assertRaises(frappe.PermissionError, desk.choose_routes, run, "Set-based SQL")

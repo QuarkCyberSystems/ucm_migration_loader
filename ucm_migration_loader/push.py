@@ -4,6 +4,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -48,6 +49,17 @@ REQUIRED = {
 }
 
 
+def _said(response) -> str:
+	"""What the site said with a refusal, where it said something: its message, without markup."""
+	try:
+		messages = json.loads(response.json().get("_server_messages") or "[]")
+		text = json.loads(messages[-1]).get("message") if messages else ""
+	except (ValueError, AttributeError, TypeError, IndexError):
+		return ""
+	text = re.sub(r"<[^>]+>", "", str(text or "")).strip().rstrip(".")
+	return f": {text}" if text else ""
+
+
 class Site:
 	"""The receiving site as the publishing account reaches it: its methods over HTTPS, with the account's
 	token."""
@@ -77,7 +89,9 @@ class Site:
 			allow_redirects=False,
 		)
 		if response.status_code != 200:
-			raise SystemExit(f"{method} returned HTTP {response.status_code}. Check the run and target log.")
+			raise SystemExit(
+				f"{method} returned HTTP {response.status_code}{_said(response)}. Check the run and target log."
+			)
 		return response.json()["message"]
 
 	def api(self, method: str, **data):

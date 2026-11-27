@@ -1,7 +1,10 @@
 """What every part of the loader does to a run on the site: who may act on it, how its record is locked and
 answered, and what keeps its delegation closed."""
 
+from contextlib import contextmanager
+
 import frappe
+from frappe import _
 
 from .constants import ACTIVATED, ROLE, RUN
 
@@ -18,6 +21,18 @@ def sender_or_admin(run):
 	if user != "Guest" and frappe.db.get_value(RUN, run, "publishing_user") == user:
 		return
 	only_admin()
+
+
+@contextmanager
+def refusals():
+	"""Around what a request asks of a run: a refusal reaches the person who asked as a message. The loader
+	refuses with ValueError, in sentences without data, because the same code runs in jobs; left alone, a request
+	would answer with a server error and no sentence."""
+	try:
+		yield
+	except ValueError as refused:
+		# escaped all the same: a message is shown as HTML
+		frappe.throw(frappe.utils.escape_html(str(refused)), title=_("Not done"))
 
 
 def record(run):

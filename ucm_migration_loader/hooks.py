@@ -8,6 +8,10 @@ required_apps = ["ucm"]
 after_install = "ucm_migration_loader.install.after_install"
 after_migrate = "ucm_migration_loader.install.after_migrate"
 
+# what the form and the list of runs share: Frappe adds the file to both scripts
+doctype_js = {"UCM Migration Run": "public/js/migration_run_common.js"}
+doctype_list_js = {"UCM Migration Run": "public/js/migration_run_common.js"}
+
 doc_events = {
 	"Context": {"validate": "ucm_migration_loader.application.guard_context"},
 	"Record Share": {"validate": "ucm_migration_loader.application.guard_share"},

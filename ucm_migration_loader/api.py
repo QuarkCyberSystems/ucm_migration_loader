@@ -4,6 +4,7 @@ the actions of a Migration Admin."""
 import json
 
 import frappe
+from frappe import _
 
 from . import operator, publication_jobs, runs
 from .constants import RUN
@@ -44,9 +45,9 @@ def quality(run: str):
 	runs.sender_or_admin(run)
 	record = frappe.get_doc(RUN, run)
 	if not run_overview.is_publication(json.loads(record.manifest_json)):
-		raise ValueError("Metrics are kept for sealed publications")
+		frappe.throw(_("Metrics are kept for sealed publications"))
 	if not record.reconciliation_json:
-		raise ValueError("The run has no verification report yet")
+		frappe.throw(_("The run has no verification report yet"))
 	document = run_overview.quality(record)
 	return {**document, "sha256": digest(document["metrics"])}
 
@@ -56,7 +57,7 @@ def quality_received(run: str, sha256: str, rows: int, destination: str):
 	"""Record that the migration side stored the metrics it was given, so the run shows the hand-over."""
 	current = quality(run)
 	if sha256 != current["sha256"] or int(rows) != len(current["metrics"]):
-		raise ValueError("The run has changed since these metrics were read")
+		frappe.throw(_("The run has changed since these metrics were read"))
 	handover = {
 		"rows": int(rows),
 		"sha256": sha256,
@@ -72,19 +73,23 @@ def quality_received(run: str, sha256: str, rows: int, destination: str):
 
 @frappe.whitelist(methods=["POST"])
 def apply(run: str, max_batches: int | None = None):
-	return publication_jobs.request(run, "apply", max_batches)
+	with runs.refusals():
+		return publication_jobs.request(run, "apply", max_batches)
 
 
 @frappe.whitelist(methods=["POST"])
 def pause(run: str):
-	return publication_jobs.request(run, "pause")
+	with runs.refusals():
+		return publication_jobs.request(run, "pause")
 
 
 @frappe.whitelist(methods=["POST"])
 def activate(run: str):
-	return publication_jobs.request(run, "activate")
+	with runs.refusals():
+		return publication_jobs.request(run, "activate")
 
 
 @frappe.whitelist(methods=["POST"])
 def discard(run: str):
-	return publication_jobs.request(run, "discard")
+	with runs.refusals():
+		return publication_jobs.request(run, "discard")

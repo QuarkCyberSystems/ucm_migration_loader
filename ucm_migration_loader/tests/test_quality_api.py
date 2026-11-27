@@ -73,12 +73,12 @@ class TestQualityAPI(IntegrationTestCase):
 
 	def test_a_run_without_a_report_has_no_metrics(self):
 		run = make_run(state="Publication staged").name
-		self.assertRaisesRegex(ValueError, "no verification report", api.quality, run)
+		self.assertRaisesRegex(frappe.ValidationError, "no verification report", api.quality, run)
 
 	def test_a_run_that_is_no_sealed_publication_has_no_metrics(self):
 		run = make_run(report=REPORT).name
 		frappe.db.set_value(constants.RUN, run, "manifest_json", json.dumps({"profile": "earlier"}))
-		self.assertRaisesRegex(ValueError, "sealed publications", api.quality, run)
+		self.assertRaisesRegex(frappe.ValidationError, "sealed publications", api.quality, run)
 
 	def test_the_run_records_the_hand_over(self):
 		before = frappe.db.get_value(constants.RUN, self.run_name, "modified")
@@ -131,7 +131,7 @@ class TestQualityAPI(IntegrationTestCase):
 		document = api.quality(self.run_name)
 		frappe.db.set_value(constants.RUN, self.run_name, "reconciliation_json", json.dumps(FOUND))
 		self.assertRaisesRegex(
-			ValueError,
+			frappe.ValidationError,
 			"changed since these metrics were read",
 			api.quality_received,
 			self.run_name,
@@ -144,7 +144,7 @@ class TestQualityAPI(IntegrationTestCase):
 	def test_a_wrong_row_count_is_not_recorded(self):
 		document = api.quality(self.run_name)
 		self.assertRaises(
-			ValueError,
+			frappe.ValidationError,
 			api.quality_received,
 			self.run_name,
 			document["sha256"],

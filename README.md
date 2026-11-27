@@ -232,14 +232,14 @@ At **Publication staged**, the receiver has verified the file and recorded the p
 
 ### What the list and the form show
 
-The **UCM Migration Run** list has one row per run: its short ID, a state, the delegation, the route, the records published and the time the load worked. The state reads as the migration team needs it: **Staged**, **Loading, 62 %**, **Paused**, **Verification failed**, **Verified, waiting for decision**, **Activated**, **Discarding**, **Discarded** or **Refused**. Filter by delegation, state or route.
+The **UCM Migration Run** list has one row per run: its short ID, a state, the delegation, the route, the records published and the time the load worked. The state reads as the migration team needs it: **Proposed, to approve**, **Waiting for the file**, **Staged**, **Loading, 62 %**, **Paused**, **Verification failed**, **Verified, waiting for decision**, **Activated**, **Discarding**, **Discarded** or **Refused**. Filter by delegation, state or route.
 
 ![The run list with state, delegation, route, records and duration](docs/screenshots/run-list.png)
 
-A run's form opens on an overview, read from what the run keeps and refreshed every ten seconds while a load or a discard is at work:
+A run's form opens on an overview, read from what the run keeps and refreshed every ten seconds while the run waits for its file, or a load or a discard is at work. The actions are offered to a Migration Admin; who only reads the run sees the overview and no action:
 
 - **Steps**: check and stage, write, derive (set-based route), verify, hand over to data quality, activate, and discard where there was one. Each has a status, the time it took, and one line of figures.
-- **Run**: delegation, route, snapshot, who staged it and when, the application versions the publication was made with.
+- **Run**: delegation, route, snapshot, who proposed, approved and staged it and when, the application versions the publication was made with.
 - **Records**: the rows of each table in the publication and in UCM, and their difference. Assignments and shares are held until activation; afterwards the table shows how many were released and how many shares are kept for delegations that are not live yet.
 - **Findings**, when a verification found something: the check, the table, the rows, a severity and the first place in the publication (batch and item). No record ID and no field value is shown. Resolve a place on the publishing host with `ucm-push locate-item`.
 

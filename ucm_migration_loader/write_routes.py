@@ -45,7 +45,6 @@ def editable(record):
 	return record.state == constants.STAGED and not record.applied and not record.dispatch_id
 
 
-@frappe.whitelist(methods=["POST"])
 def options(run: str):
 	runs.only_admin()
 	record = runs.record(run)
@@ -62,7 +61,6 @@ def options(run: str):
 	]
 
 
-@frappe.whitelist(methods=["POST"])
 def configure(run: str, routes: dict | str):
 	runs.only_admin()
 	record = runs.record(run)
@@ -82,7 +80,6 @@ def configure(run: str, routes: dict | str):
 	record.save(ignore_permissions=True)
 
 
-@frappe.whitelist(methods=["POST"])
 def select(run: str, route: str):
 	"""Choose one route for every published DocType of a staged run."""
 	if route not in ROUTES:

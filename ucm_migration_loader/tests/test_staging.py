@@ -115,7 +115,7 @@ class TestRefusal(StagingCase):
 		path, run = self.sealed(versions={"ucm": "0.0.0-not-this-site"})
 		self.refused(path, run)
 		for action in (api.apply, api.activate, api.pause):
-			self.assertRaisesRegex(ValueError, "Cannot .* a run in Rejected", action, run)
+			self.assertRaisesRegex(frappe.ValidationError, "Cannot .* a run in Rejected", action, run)
 
 	def test_a_refused_delegation_can_be_published_again(self):
 		"""A refusal does not hold the context: another file of the same delegation may be staged."""
@@ -207,7 +207,7 @@ class TestTransfer(StagingCase):
 		self.assertEqual(api.status(run)["state"], "Publication staged")
 		self.assertEqual(api.report(run)["run"], run)
 		# it may ask for the metrics: there are none before the verification
-		self.assertRaisesRegex(ValueError, "no verification report", api.quality, run)
+		self.assertRaisesRegex(frappe.ValidationError, "no verification report", api.quality, run)
 		# and nothing else: the loader's commands and the run's form stay with the operators
 		for command in (api.apply, api.activate, api.discard, api.pause, overview):
 			self.assertRaises(frappe.PermissionError, command, run)

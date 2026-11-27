@@ -81,3 +81,24 @@ def stage_now(run: str):
 	except ValueError as failed:
 		# the loader's own refusals are sentences without data; escaped all the same, as a message is shown as HTML
 		frappe.throw(_("Staging failed: {0}").format(frappe.utils.escape_html(str(failed))))
+
+
+@frappe.whitelist(methods=["POST"])
+def route_options(run: str):
+	"""The write routes a staged run can take, for each DocType it publishes, with the route chosen so far."""
+	from ucm_migration_loader import runs, write_routes
+
+	with runs.refusals():
+		return write_routes.options(run)
+
+
+@frappe.whitelist(methods=["POST"])
+def choose_routes(run: str, route: str | None = None, routes: dict | None = None):
+	"""Choose a staged run's write routes: one `route` for the whole delegation, or `routes` by DocType."""
+	from ucm_migration_loader import runs, write_routes
+
+	with runs.refusals():
+		if route:
+			return write_routes.select(run, route)
+		write_routes.configure(run, routes or {})
+		return {"run": run}
