@@ -78,7 +78,7 @@
    "fieldtype": "Select",
    "in_standard_filter": 1,
    "label": "State",
-   "options": "Receiving\nProposed\nAwaiting publication\nPublication staged\nPublication applying\nPublication cleaning\nPublication paused\nPublication ready\nStaged\nVerified\nApplying\nPaused\nReady\nCleaning\nRejected\nActivated\nDiscarded",
+   "options": "Proposed\nAwaiting publication\nPublication staged\nPublication applying\nPublication cleaning\nPublication paused\nPublication ready\nRejected\nActivated\nDiscarded",
    "read_only": 1
   },
   {
@@ -245,7 +245,7 @@
   }
  ],
  "links": [],
- "modified": "2026-11-27 16:02:30.284246",
+ "modified": "2026-11-27 16:42:26.824403",
  "modified_by": "Administrator",
  "module": "UCM Migration Loader",
  "name": "UCM Migration Run",

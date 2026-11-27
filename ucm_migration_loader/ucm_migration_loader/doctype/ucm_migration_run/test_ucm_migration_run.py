@@ -50,9 +50,9 @@ class TestUCMMigrationRun(IntegrationTestCase):
 		for right in ("write", "create", "delete"):
 			self.assertFalse(frappe.has_permission(api.RUN, right, run), right)
 
-	def test_a_pilot_run_has_no_overview(self):
+	def test_a_run_that_is_no_sealed_publication_has_no_overview(self):
 		run = make_run().name
-		frappe.db.set_value(api.RUN, run, "manifest_json", json.dumps({"profile": "pilot"}))
+		frappe.db.set_value(api.RUN, run, "manifest_json", json.dumps({"profile": "earlier"}))
 		self.assertEqual(overview(run), {"publication": False})
 
 	def test_a_verified_set_based_run_waits_for_the_decision(self):

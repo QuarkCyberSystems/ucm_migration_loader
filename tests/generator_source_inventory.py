@@ -11,7 +11,7 @@ from pathlib import Path
 import frappe
 import pymysql
 from generator_snapshot import BENCH, site_connection
-from transport import publication_reader
+from rehearsal_bench import publication_reader
 
 from ucm_migration_loader.frozen import freeze
 from ucm_migration_loader.source_inventory import inventory

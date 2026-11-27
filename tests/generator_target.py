@@ -7,7 +7,7 @@ from importlib import import_module
 
 import frappe
 from generator_snapshot import BENCH
-from qualify import provision
+from rehearsal_bench import provision
 
 
 def prepare(site):

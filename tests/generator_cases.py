@@ -8,7 +8,6 @@ import frappe
 from generator_collisions import read_site
 from generator_snapshot import BENCH, fingerprint
 
-from ucm_migration_loader.api import PILOT_MARKER
 from ucm_migration_loader.parent_publication import CASE_FIELDS, case_documents
 
 CHILD_FIELDS = ("name", "idx", "context_tech_id")
@@ -38,7 +37,7 @@ def rehearse(source, target):
 						"context_code": code,
 						"context_status": "Locked",
 						"context_discoverability": "Hidden",
-						"context_description": PILOT_MARKER,
+						"context_description": "Synthetic UCM migration rehearsal",
 					}
 				).insert(set_name=ctx)
 			results = {}

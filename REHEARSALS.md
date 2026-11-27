@@ -12,148 +12,17 @@ The Python publisher freezes a delegation from a read-only MariaDB snapshot. The
 
 After activation, use the ordinary UCM editing workflow for approved corrections. In the local rehearsal a caseworker corrected a case name after a follow-up remark had been saved. UCM retained the remark, record ID, editor and migration receipt. The loader refused to discard the activated delegation. The reproduction is in `tests/generator_live_correction.py`.
 
-## Four-table development pilot
-
-The original bounded pilot handles Person, Person Other Name, Case and Case Member. The following setup and `plan` / `push` commands reproduce that development profile. The full casework workflow uses `prepare` / `send-publication`.
-
 ## Target setup
 
-Install the app alongside UCM. Register a worker named `ucm_migration` under the bench's `workers` configuration, with a timeout of 300 seconds, then start a worker for that queue. The pilot uses **UCM Migration Run** and **UCM Migration Batch**. Full publications also use **UCM Migration Held Share**. System Managers prepare runs, inspect the audit records and control verification, discard and activation. An enabled API publishing account can stage data and check status for each exact manifest assigned to it. It needs no System Manager role. For a dedicated synthetic target context use status `Locked`, discoverability `Hidden` and description `Synthetic UCM migration rehearsal`. Preflight requires the pilot’s business tables to be empty for that context. Each wave uses its own provisioned context UUID on the publishing and target sides.
-
-## Push a publication
-
-On the publishing host, install the Python package and supply a private JSON file with PyMySQL connection arguments for a read-only account on the frozen publication. Plan the run once and give the target operator the manifest file. The command prints the run ID, batch count and document count.
-
-```sh
-ucm-push plan --site ucm.localhost --snapshot rehearsed-01 --context "$CONTEXT_ID" --source-config "$PUBLISH_DB_CONFIG" --manifest-out manifest.json
-```
-
-On the target bench, review the site, context, snapshot and ordered batch digests. Register the approved file and the enabled publishing account. Replace the example path and account with the reviewed values.
-
-```sh
-bench --site ucm.localhost execute ucm_migration_loader.operator.prepare_publication --kwargs '{"manifest_path":"/absolute/path/to/manifest.json","publishing_user":"publisher@example.invalid"}'
-```
-
-On the publishing host, set `UCM_MIGRATION_TOKEN` to that account’s API key and secret in `key:secret` format. Set `UCM_URL` to the HTTPS base URL for the target site. The CLI verifies its certificate. For a private certificate authority, set `REQUESTS_CA_BUNDLE` to its CA bundle. To pause after one new batch, then resume in a separate process, run:
-
-```sh
-ucm-push push --site ucm.localhost --snapshot rehearsed-01 --context "$CONTEXT_ID" --source-config "$PUBLISH_DB_CONFIG" --url "$UCM_URL" --max-batches 1
-ucm-push push --site ucm.localhost --snapshot rehearsed-01 --context "$CONTEXT_ID" --source-config "$PUBLISH_DB_CONFIG" --url "$UCM_URL"
-ucm-push status --site ucm.localhost --run "$RUN_ID" --url "$UCM_URL"
-```
-
-In a separate operator session using System Manager credentials, request verification and poll until `Verified` or `Rejected`. For separate business commits, run `apply`. Its worker writes a single batch and its receipt in the same transaction, then queues the next batch. The incoming context stays locked and hidden. After the run reaches `Ready`, inspect the report and request activation following sign-off.
-
-```sh
-ucm-push verify --site ucm.localhost --run "$RUN_ID" --url "$UCM_URL"
-ucm-push status --site ucm.localhost --run "$RUN_ID" --url "$UCM_URL"
-ucm-push apply --site ucm.localhost --run "$RUN_ID" --url "$UCM_URL"
-ucm-push report --site ucm.localhost --run "$RUN_ID" --url "$UCM_URL"
-ucm-push activate --site ucm.localhost --run "$RUN_ID" --url "$UCM_URL"
-```
-
-- `received` counts staged batches. `applied` counts batches with committed business rows. `Activated` confirms the delegation is open.
-- Use `apply --max-batches 1` to apply one batch. Use `pause` during application. It waits for the current batch transaction and prevents queued work from advancing. Run `apply` again to resume from the durable cursor. A failed validation pauses the worker and leaves a finding.
-- Repeat `push` with the same frozen snapshot and limits to resume uploads. New CLI manifests also bind the four MariaDB table definitions. A change in columns, keys or other structural DDL requires review.
-- `discard` cancels a pre-activation run. When business batches exist, `Cleaning` means the worker is deleting the run’s rows in reverse dependency order, one transaction per batch. Reissue `discard` after an interrupted cleanup and poll until `Discarded`. Each cleanup checks the saved row digest before deletion. After discard, increment `--attempt` on both plan and push to reload the same published IDs.
-- `report` provides per-entity counts and hashes of the matched IDs and populated publication fields. The check includes membership links, alias ownership and child order. Unspecified source fields take UCM defaults. Activation repeats the checks, records the operator and time, and clears staged payloads. Older runs that predate reporting can have empty report fields.
-
-The development profile caps a wave at 500 parent documents and 4 MiB, with at most 256 KiB per upload. Verification rehearses the whole bounded wave through the ORM and rolls it back. The original small-wave route, activating directly from `Verified`, still inserts and opens the wave atomically. Use the explicit `apply` route for batch receipts, reconciliation and recovery testing.
-
-## Reproduce the development rehearsal
-
-From the bench root, with the app installed and the dedicated queue configured:
-
-```sh
-env/bin/pytest -q apps/ucm_migration_loader/tests/test_contract.py
-env/bin/python apps/ucm_migration_loader/tests/rehearse.py --site ucm.localhost
-```
-
-The second command writes synthetic test data. It creates new contexts, clones the deployed columns into connection-local MariaDB publishing tables, calls the application handlers through the bench session, and drains the dedicated queue with burst workers. The fixture omits FULLTEXT indexes because MariaDB temporary InnoDB tables do not support them. A successful run retains the activated synthetic records and audit receipts, disables the synthetic caseworker, and prints the run and context IDs. Rejected and activated run payloads are cleared on discard and activation respectively.
-
-The rehearsal exercises a lost upload acknowledgment, resumption, rollback of earlier ORM inserts after a later invalid link, and an A-only caseworker saving while B is staged.
-
-For the transport rehearsal, supply a separate, socket-only MariaDB server with a persistent data directory. The local OS user needs permission to create a synthetic schema and a temporary read-only login on that server. On this bench the publisher socket is `.ucm-publisher/publisher.sock`. Run from the bench root:
-
-```sh
-env/bin/python apps/ucm_migration_loader/tests/transport.py --site ucm.localhost --publisher-socket .ucm-publisher/publisher.sock
-```
-
-The rehearsal copies the deployed DDL for all four pilot tables, registers the generated manifest using the bench command, then launches independent CLI processes against the real Frappe app on a loopback HTTPS listener. It checks replay, restart, verification, activation and final relationships. Anonymous requests and an unassigned publisher cannot read the run. Only the assigned publisher or an operator can upload. The test retains the synthetic source schema, activated context and audit receipts, revokes its source login and disables its temporary API accounts.
-
-## Rehearse the first and second delegation on the same site
-
-Provision a fresh rehearsal site on this bench with UCM and the loader installed. Use a new site name for each run. The test checks for existing contexts, migration runs and delegation business data before creating the fixtures. The example uses the standard bench installer, which prompts for the database administrator and site Administrator credentials as needed.
-
-```sh
-bench new-site "$FRESH_SITE" --install-app ucm --install-app ucm_migration_loader
-env/bin/python apps/ucm_migration_loader/tests/first_wave.py --site "$FRESH_SITE" --publisher-socket .ucm-publisher/publisher.sock
-```
-
-For delegation A, the rehearsal cancels an upload after its first receipt and checks that the staged payload was cleared. On the second attempt it deliberately withholds a membership role. The worker checks the staged documents with UCM’s dictionary validator before inserting any business rows. The rehearsal checks the rejection, empty pilot tables and caseworker grant. It then provisions the missing value and reloads the same frozen publication under a new attempt number. It reconciles all four pilot tables and checks the imported relationships and business identifiers.
-
-A synthetic caseworker signs in over HTTPS, finds and edits the imported case, records an activity against it, and creates a new case and person. The same session stays open during B’s migration. It saves an A edit while B is staged, then checks that the edit persisted and B’s case stays out of the caseworker’s list after activation. Both transfers use the persistent publisher, restart the CLI after one batch and retain the run receipts. The test disables its temporary accounts and leaves the synthetic data available for review.
-
-This run covers the four-table pilot with synthetic legacy identifiers, one caseworker and a loopback TLS listener. Qualification still needs broader coverage of generator output, the deployed network gateway and production-sized waves.
-
-
-### Interrupt a business batch
-
-Run this on a synthetic UCM site that supports a local caseworker password login. It creates new A and B contexts and retains the resulting audit records.
-
-```sh
-env/bin/python apps/ucm_migration_loader/tests/batch_recovery.py --site ucm-first-wave-02.localhost
-```
-
-The rehearsal terminates a child process between a business insert and its receipt. It checks database rollback, fresh-worker resume, pause, duplicate delivery, out-of-band share and context controls, reverse cleanup and identifier reuse. It also changes a synthetic field after reconciliation and checks that activation waits for correction. A caseworker granted both contexts must still wait for activation to open B’s records.
-
-### Measure live caseworker traffic
-
-```sh
-env/bin/python apps/ucm_migration_loader/tests/live_load.py --site ucm-batch-first.localhost --publisher-socket .ucm-publisher/publisher.sock --case-files 150 --batch-size 25
-```
-
-This synthetic test reads a frozen MariaDB publication and stages it through the target handlers. A separate authenticated HTTPS session reads and saves an A case during a baseline period and throughout B’s verification, apply and activation. The output gives counts, errors and p50/p95/p99 in milliseconds per phase and operation. Each case file includes a person, alias, case and membership. The caseworker and publishing accounts are disabled or revoked after the run.
-
-To export the current site’s UCM and dictionary inventory for mapping review, run the following with a new output path. Each row identifies its SQL type, context or parent ownership, link target, fetch rule and implemented coverage. Historical policy and unsupported fields remain visible to the reviewers.
-
-```sh
-bench --site ucm.localhost execute ucm_migration_loader.inventory.export_csv --kwargs '{"output_path":"/absolute/path/to/field-inventory.csv"}'
-```
-
-## Compare an independent expected result
-
-Before activation, give the target operator an independently reviewed projection of the synthetic or legacy snapshot. The expected JSON has `site`, `context`, `snapshot` and an `entities` object with arrays for all four pilot tables. Each parent row has its published `name`, `context_tech_id` and the populated profile fields. A Person Other Name row has its published `name`, `parent`, integer `idx` and populated alias fields. The publisher can perform the comparison over its assigned run's report endpoint.
-
-```sh
-ucm-push reconcile --site ucm.localhost --url "$UCM_URL" --run "$RUN_ID" --expected "$EXPECTED_JSON"
-```
-
-A mismatch exits with status 1 and lists the entity and the differing checks. A different membership can fail the field comparison even when every table count and key set matches. The command reads expected business values locally and retrieves aggregate hashes from the target. The target operator retains the activation decision.
-
-## Run the complete local qualification suite
-
-From the bench root, choose a new local site name, a new evidence file and the existing populated development target.
-
-```sh
-env/bin/python apps/ucm_migration_loader/tests/qualify.py --provision --fresh-site "$NEW_LOCAL_SITE" --target ucm.localhost --publisher-socket .ucm-publisher/publisher.sock --evidence "$NEW_EVIDENCE_FILE"
-```
-
-The runner provisions a fresh Frappe site with UCM and the loader, checks the frozen fixture generator output twice, counts target key collisions, rehearses its cases through the ORM, and runs the pilot contract, first and later waves, crash recovery, live traffic and populated-target transport tests. It records the app revisions, local change indicators, installed loader digest, checks, timings and run IDs. Omit `--provision` to use an already installed, empty rehearsal site. The suite retains its synthetic contexts and publications for inspection.
-
-The optional `--access-source-site ucm-generator-access.localhost` adds the published local-script names and effective consent checks to the same qualification run.
+Install the app alongside UCM. Register a worker named `ucm_migration` under the bench's `workers` configuration, with a timeout of 300 seconds, then start a worker for that queue. The loader keeps **UCM Migration Run**, **UCM Migration Batch** and **UCM Migration Held Share**. A Migration Admin approves hand-offs, inspects the audit records and controls loading, discard and activation; a System Manager reads them and gives the role. An enabled API publishing account can send the file of each exact run assigned to it and check its status, and needs no role for that; the Migration Publisher role lets it propose its hand-offs. Each wave uses its own provisioned context UUID on the publishing and target sides.
 
 ## Use the fixture generator as the development source
 
 For generator-based rehearsals, set `UCM_FIXTURE_APP` to the Python package of your installed synthetic fixture app. These optional tests expect its `demo.volume.load` and `demo.volume.check` interfaces and its address-type and member-role helpers. Use the generator on a fresh, isolated publishing site for full-shape test data. The source used here is `ucm-generator.localhost`, hosted on the socket-only publishing MariaDB instance with its web interface in maintenance mode. Its retained snapshot label is `migration-source-96`. The generator ran with 96 persons, two contexts, 12 users, two analysts, two shares per shared-only user, one writer and existing indexes retained. Its own `volume.check` passed. The smaller fixtures above are for targeted faults and known-answer transport checks.
 
 ```sh
-env/bin/python apps/ucm_migration_loader/tests/generator_coverage.py --source-site ucm-generator.localhost --label migration-source-96 --target ucm.localhost --evidence "$NEW_EVIDENCE_FILE"
-ucm-push assess --site ucm.localhost --snapshot migration-source-96 --context "$CONTEXT_ID" --source-config "$PUBLISH_DB_CONFIG"
 ucm-push upload-order --site ucm.localhost --snapshot migration-source-96 --context "$CONTEXT_ID" --source-config "$PUBLISH_DB_CONFIG" --batch-size 25
 ```
-
-`assess` reads the source and returns counts for records and non-default business fields outside the pilot. It inspects tables visible to the publishing login and reports each wave independently. Grant the reader access to the entire publication. The CLI refuses to issue an approval manifest or push a wave that contains these omissions. The checked generator output includes activities, history, sharing, sensitive information and addresses still outside the four-table profile. Its generator sizing presets are inputs for later load tests.
 
 The read-only `upload-order` command stages the service and response dependencies in temporary local SQLite storage and orders the published activity keys into batches. A prerequisite must appear in an earlier batch. Missing, out-of-delegation or cyclic prerequisites fail the plan. The command outputs counts and a reproducible order digest. The generated BOL and SAH activity graphs produced 5 and 9 batches respectively with a limit of 25 keys. The target activity writer is still pending.
 
@@ -167,20 +36,15 @@ env/bin/python apps/ucm_migration_loader/tests/generator_collisions.py --source-
 env/bin/python apps/ucm_migration_loader/tests/generator_cases.py --source-site ucm-generator.localhost --target "$ISOLATED_REHEARSAL_SITE"
 ```
 
-In the 96-person publication the 20 selected tables contain 2,100 delegation-owned rows, including 96 person files and 70 tasks. Outgoing shares belong to the source delegation. The coverage check lists incoming shares separately because activation may affect the receiving delegation. All 96 person IDs and all 37 case IDs already exist on the populated development target. Use the isolated site for positive generator tests and the populated site for collision checks and uniquely keyed transport fixtures. The generated case rehearsal checks names, numbers, status, remarks and context links. Sensitivity tags still require their own import and reconciliation.
-
-The second publication uses the same generator with 240 people, three contexts and a consent rate of 35 percent. It populated all 18 generator-declared business and access tables. The isolated test opens generated person names, checks the searchable combined names and ordered aliases, inserts each consent through UCM and checks the withholding rules used by the application. The target transaction rolls back after verification. The generator created 33 alternate names and 90 partial objections across the three contexts.
+In the 96-person publication the 20 selected tables contain 2,100 delegation-owned rows, including 96 person files and 70 tasks. Outgoing shares belong to the source delegation. All 96 person IDs and all 37 case IDs already exist on the populated development target. Use the isolated site for positive generator tests and the populated site for collision checks and uniquely keyed transport fixtures. The generated case rehearsal checks names, numbers, status, remarks and context links. Sensitivity tags still require their own import and reconciliation.
 
 ```sh
 env/bin/python apps/ucm_migration_loader/tests/publish_generator.py --site "$NEW_GENERATOR_SITE" --preset access --publisher-socket .ucm-publisher/publisher.sock
-env/bin/python apps/ucm_migration_loader/tests/generator_consent.py --source-site "$NEW_GENERATOR_SITE" --target "$ISOLATED_REHEARSAL_SITE"
 ```
 
 Choose an unused `ucm-generator-*.localhost` name. The `casework` preset recreates the smaller sample with newly allocated context IDs. Each source retains its frozen database and private files.
 
-In Desk, open a **UCM Migration Run** and use the **Migration** menu to verify, apply, pause, resume, review the report, activate or clean up as its state permits.
-
-The opt-in `--profile synthetic-case-file-consent-v2` adds Person Consent to the case-file contract. Use the same profile for assessment, planning and upload. Every consent must refer to a person earlier in the wave and supply its recipient, decision and all five withholding flags. Verification uses UCM validation. The worker applies and reconciles the batches before activation. Full generator publications still contain additional unsupported data.
+In Desk, open a **UCM Migration Run** and use the **Migration** menu to apply, pause, resume, review the report, activate or clean up as its state permits.
 
 ### Shared reference rehearsal
 
@@ -227,7 +91,7 @@ Keep the run ID independently of the file. It binds the context, site, snapshot,
 
 Full publications use the original context description. Select an empty, locked and hidden receiving delegation. The operator staging the sealed publication binds it to that context, and a staged run prevents an early release.
 
-On the receiving bench, `ucm_migration_loader.publication_receiver.stage(path, run)` is a System Manager operator entry point for a delivered file. It copies to the target site's private migration directory, verifies the retained run ID, locks the receiving context and records a durable receipt. A second submission returns the existing receipt. `Publication staged` means the target has verified the complete file. Its applied cursor stays at zero until a business worker commits records. The benchmark exercised this local handoff on the isolated target. The sealed HTTPS handoff and both operator workflows are described below.
+On the receiving bench, `ucm_migration_loader.publication_receiver.stage(path, run)` is a Migration Admin's entry point for a delivered file. It copies to the target site's private migration directory, verifies the retained run ID, locks the receiving context and records a durable receipt. A second submission returns the existing receipt. `Publication staged` means the target has verified the complete file. Its applied cursor stays at zero until a business worker commits records. The benchmark exercised this local handoff on the isolated target. The sealed HTTPS handoff and both operator workflows are described below.
 
 ### Choose write routes on the receiver
 
@@ -277,7 +141,7 @@ For a sealed delivery, `ucm-push transfer-status --site SITE --url HTTPS_URL --r
 
 ### Historical shares to future delegations
 
-An open historical share to an inactive receiving delegation creates a System Manager-only **UCM Migration Held Share** receipt when its owner goes live. The published share ID, source run, batch and item position bind it to the original publication. The source report distinguishes live access rows from held receipts. Keep the source site's private staged copy until all of its holds are resolved.
+An open historical share to an inactive receiving delegation creates a **UCM Migration Held Share** receipt, read by Migration Admins and System Managers, when its owner goes live. The published share ID, source run, batch and item position bind it to the original publication. The source report distinguishes live access rows from held receipts. Keep the source site's private staged copy until all of its holds are resolved.
 
 Recipient activation checks the sealed descriptor, reference identities and source batch digest. It evaluates current UCM consent, expiry, record ownership, merged-person status, receiver status and existing shares. An eligible item retains the published ID and status. A consent objection or other eligibility change leaves the receipt in **Review** without creating a Record Share. An integrity, permissions or storage error rolls back the activation transaction. Source and recipient activation are serialized so overlapping go-lives cannot miss a hold. Replay of a completed activation returns its receipt. The source run links to historical share receipts and the receiving run links to shares requiring review.
 

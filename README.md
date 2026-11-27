@@ -338,19 +338,7 @@ These examples reuse the Bash arrays and variables from steps 2 and 3. For opera
 | `activate` | Request activation of a reviewed ready delegation | `ucm-push activate "${remote[@]}"` |
 | `discard` | Cancel a hidden run and remove its imported rows while retaining receipts | `ucm-push discard "${remote[@]}"` |
 
-### Bounded case-file pilot commands
-
-The pilot supports a smaller case-file profile and has its own manifest, approval and verification steps. It also supports `status`, `apply`, `pause`, `report`, `activate` and `discard`. Select the same `--profile`, `--attempt`, snapshot and batch limits for both plan and push. The pilot requires the target context description `Synthetic UCM migration rehearsal`.
-
-| Command | What it does | Example |
-|---|---|---|
-| `assess` | Check whether the source fits the selected pilot profile | `ucm-push assess "${src[@]}"` |
-| `plan` | Generate the pilot manifest for target approval | `ucm-push plan "${src[@]}" --manifest-out manifest.json` |
-| `push` | Send pilot document batches after approval | `ucm-push push "${src[@]}" --url "$UCM_URL" --max-batches 1` |
-| `verify` | Request verification of a staged pilot | `ucm-push verify "${remote[@]}"` |
-| `reconcile` | Compare an independently reviewed pilot projection to the target report | `ucm-push reconcile "${remote[@]}" --expected expected.json` |
-
-For the pilot, use the run digest from `plan` in `remote`. The receiving operator approves the reviewed manifest with `ucm_migration_loader.operator.prepare_publication`. See the [pilot approval example](REHEARSALS.md#push-a-publication) and [expected JSON format](REHEARSALS.md#compare-an-independent-expected-result). The CLI accepts the legacy spellings `activity-order` for `upload-order` and `freeze` for `prepare`. Run `ucm-push --help` for every flag.
+The CLI accepts the legacy spellings `activity-order` for `upload-order` and `freeze` for `prepare`. Run `ucm-push --help` for every flag.
 
 ## Recovery
 
@@ -358,7 +346,7 @@ For the pilot, use the run digest from `plan` in `remote`. The receiving operato
 |---|---|
 | Upload interrupted | Check `transfer-status` and repeat `send-publication` using the same approved file and digest. |
 | Apply interrupted | Check `status` or the run's **Finding**. Each successful business batch and its receipt commit together. Resume with `apply` after correcting the reported issue. |
-| Source data needs correction | Review and discard the hidden run, correct the source, then prepare a new full publication with a new snapshot identity. For the bounded pilot, increment `--attempt`. |
+| Source data needs correction | Review and discard the hidden run, correct the source, then prepare a new full publication with a new snapshot identity. |
 | Write-route menu missing | Open a full **Publication staged** run before its first apply request. |
 | Staging refused | Open the **Refused** run the staging left: its first step says what differs. Correct the site (release, reference data) or prepare a new publication, then stage again. |
 | The form says **No job is working on this load** (or discard) | The job's process was killed or its worker went down. The run kept its state and nothing is half written: every batch with a receipt is stored whole, and the rows of the batch that was being written are gone. Choose **Migration → Resume from last receipt** (or **Resume cleanup**): the load goes on after the last receipt, and the verification after the last batch it had compared. |
@@ -428,7 +416,7 @@ Three kinds, each run where it fits. Synthetic data only.
 | Integration tests | `ucm_migration_loader/tests/` and beside the DocType | `bench --site SITE run-tests --app ucm_migration_loader` | a site with ucm and the loader installed |
 | Rehearsals and browser tests | the other files of `tests/`, and `e2e/` | by hand, from the bench; see [REHEARSALS.md](REHEARSALS.md) | a development site that is being served, with a worker and generator data |
 
-- The unit tests cover what needs no site: the pilot contract, the sealed file's index, the set-based route's planning, the run's overview and metrics, `ucm-push quality` with the site's answers played back, and the short commands with their settings file.
+- The unit tests cover what needs no site: the order of activities and the tables' fingerprints, the sealed file's index, the set-based route's planning, the run's overview and metrics, `ucm-push quality` with the site's answers played back, and the short commands with their settings file.
 - The integration tests cover what the site decides: who may approve and act (the Migration Admin role), who may propose (the Migration Publisher role), the proposal with its check code, the approval of a hand-off with its context, the run that waits for its file and its staging on arrival, who may read a run and its metrics, the hand-over record, a sealed file that is refused for each reason and staged again afterwards, the account a transfer names, the list's columns, and what the form shows in every state. They build their own runs and a small sealed file by hand, roll everything back and remove the files they stage, so they can run on a site that holds loaded delegations. They do not load a delegation: a load commits, and is rehearsed instead.
 - The rehearsals load, verify, hand over, activate and discard real generator delegations through the bench's own worker, and the browser tests drive the Desk form through the same steps.
 - `e2e/manual_screenshots.py` takes the pictures of the user manual from runs in the situations it describes, into `docs/images/user-guide/`; `e2e/site_operator.py --shots` takes those of the approval. The manual embeds them.

@@ -93,10 +93,7 @@ def apply_catalogs(source, *, catalogs=CATALOGS, context=None):
 				if dt == "Context Profile Exemption":
 					from .application import check_closed
 
-					check_closed(
-						frappe.get_doc("Context", row["context_tech_id"], for_update=True),
-						pilot=False,
-					)
+					check_closed(frappe.get_doc("Context", row["context_tech_id"], for_update=True))
 				frappe.get_doc({"doctype": dt, **row}).insert(set_name=name)
 				created += 1
 				stored = frappe.db.get_value(dt, name, fields, as_dict=True, for_update=True)

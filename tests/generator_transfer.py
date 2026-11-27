@@ -10,7 +10,7 @@ from pathlib import Path
 
 import frappe
 from generator_snapshot import BENCH
-from transport import publisher_identity, tls_site
+from rehearsal_bench import publisher_identity, tls_site
 
 from ucm_migration_loader.operator import approve_sealed
 from ucm_migration_loader.publication_transport import receive

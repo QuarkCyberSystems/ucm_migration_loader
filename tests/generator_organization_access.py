@@ -9,10 +9,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import frappe
-from first_wave import login_caseworker
 from generator_held_shares import assert_denied
 from generator_snapshot import BENCH
-from transport import tls_site
+from rehearsal_bench import login_caseworker, tls_site
 
 from ucm_migration_loader.publication_receiver import local_publication
 

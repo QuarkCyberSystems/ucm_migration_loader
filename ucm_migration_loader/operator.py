@@ -1,16 +1,10 @@
-"""Bench entry point for registering the manifest reviewed by a target operator."""
+"""The hand-off of a sealed publication on the site: proposed by its publishing account, approved by a Migration
+Admin, and staged when its file has arrived."""
 
 import json
 from pathlib import Path
 
 from . import api
-
-
-def prepare_publication(manifest_path: str, publishing_user: str):
-	api._operator()
-	if not publishing_user:
-		raise ValueError("Select the publishing account for this manifest")
-	return api.begin(json.loads(Path(manifest_path).read_text()), publishing_user)
 
 
 def _reviewed(handoff: dict) -> tuple[str, dict, str, int, dict]:

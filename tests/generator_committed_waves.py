@@ -15,11 +15,9 @@ from time import monotonic
 from uuid import uuid4
 
 import frappe
-from first_wave import login_caseworker
 from generator_snapshot import BENCH
-from live_load import summary
+from rehearsal_bench import login_caseworker, summary, tls_site
 from requests import HTTPError, RequestException
-from transport import tls_site
 
 from ucm_migration_loader.frozen import verify_publication
 from ucm_migration_loader.publication_receiver import local_publication

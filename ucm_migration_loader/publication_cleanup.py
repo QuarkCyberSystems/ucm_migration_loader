@@ -153,7 +153,7 @@ def discard(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadli
 					"Publication cleaning",
 				):
 					raise ValueError("Publication is no longer eligible for discard")
-				check_closed(ctx, pilot=False)
+				check_closed(ctx)
 				sequence = record.applied or 0
 				if sequence:
 					sha, payload = publication_index.read_batch(db, hashes, sequence, manifest["batches"])

@@ -74,11 +74,9 @@ max-statements = 60
 # The functions above the limits when they were set: brought down as they are touched, not raised again
 [tool.ruff.lint.per-file-ignores]
 "**/test_*.py" = ["C901", "PLR0915"]
-"tests/batch_recovery.py" = ["PLR0915"]
 "tests/checkpoint_recovery.py" = ["C901"]
 "tests/generator_casework.py" = ["C901", "PLR0912"]
 "tests/generator_committed_waves.py" = ["C901", "PLR0912", "PLR0915"]
-"tests/generator_coverage.py" = ["C901"]
 "tests/generator_end_to_end.py" = ["C901", "PLR0915"]
 "tests/generator_reload_wave.py" = ["PLR0915"]
 "ucm_migration_loader/api.py" = ["C901", "PLR0912"]

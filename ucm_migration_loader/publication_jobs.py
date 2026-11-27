@@ -8,7 +8,6 @@ from frappe.utils import now_datetime
 
 from . import api, write_routes
 from .application import check_closed, lock_run
-from .frozen import FORMAT
 
 STAGED = "Publication staged"
 APPLYING = "Publication applying"
@@ -25,11 +24,6 @@ def set_based(run):
 	"""Whether the run's plan is the set-based route, whose steps the queue runs in place of the batches."""
 	plan = frappe.db.get_value(api.RUN, run, "write_plan_json")
 	return write_routes.set_based(json.loads(plan or "{}"))
-
-
-def is_publication(run):
-	manifest = frappe.db.get_value(api.RUN, run, "manifest_json")
-	return bool(manifest and json.loads(manifest).get("format") == FORMAT)
 
 
 def request(run, action, max_batches=None):
@@ -57,7 +51,7 @@ def request(run, action, max_batches=None):
 	}
 	if record.state not in allowed[action]:
 		raise ValueError(f"Cannot {action} a run in {record.state}")
-	check_closed(ctx, pilot=False)
+	check_closed(ctx)
 	next_state = {
 		"apply": APPLYING,
 		"pause": PAUSED,

@@ -84,8 +84,8 @@ def _stage(args, said, env, bench, handoff, run) -> None:
 
 
 def flow(args) -> dict:
+	from rehearsal_bench import publisher_identity, tls_site
 	from set_based_queue import connect, record
-	from transport import publisher_identity, tls_site
 
 	from ucm_migration_loader.ucm_migration_loader import set_based
 

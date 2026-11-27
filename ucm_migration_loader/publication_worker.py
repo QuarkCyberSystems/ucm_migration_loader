@@ -355,7 +355,7 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadline
 					return api._result(record)
 				publication_index.check_identity(path, stamp)
 				started = monotonic()
-				check_closed(ctx, pilot=False)
+				check_closed(ctx)
 				if not record.applied:
 					from .publication_prerequisites import verify_links
 
@@ -742,7 +742,7 @@ def _activate(run):
 				return api._result(record)
 			if record.state not in ("Publication ready", "Publication applying"):
 				raise ValueError("Run has no committed business batches")
-			check_closed(ctx, pilot=False)
+			check_closed(ctx)
 			reconcile_business(db, ctx, record, manifest)
 			cache = {}
 			frappe.flags.ucm_publishing_context = ctx.name

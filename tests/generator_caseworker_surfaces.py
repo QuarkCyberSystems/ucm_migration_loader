@@ -12,8 +12,8 @@ from pathlib import Path
 from uuid import uuid4
 
 import frappe
-from first_wave import caseworker_session
 from generator_snapshot import BENCH
+from rehearsal_bench import caseworker_session
 from requests import HTTPError
 
 from ucm_migration_loader.publication_receiver import local_publication

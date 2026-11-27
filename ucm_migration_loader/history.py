@@ -17,7 +17,7 @@ def insert_history(row, *, insert=insert_document):
 
 	frappe.only_for("Migration Admin")
 	ctx = frappe.get_doc("Context", row["context_tech_id"], for_update=True)
-	check_closed(ctx, pilot=False)
+	check_closed(ctx)
 	locked, actor, when = row[LOCKED], row[BY], row[ON]
 	if locked not in (0, 1) or (not locked and (actor or when)):
 		raise ValueError("Inconsistent published history lock")

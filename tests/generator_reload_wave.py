@@ -9,11 +9,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import frappe
-from first_wave import caseworker_session
 from generator_collisions import read_site
 from generator_snapshot import BENCH, site_snapshot
 from generator_transfer import deliver
-from rehearse import call, worker
+from rehearsal_bench import call, caseworker_session, worker
 
 from ucm_migration_loader.frozen import freeze, verify_publication
 from ucm_migration_loader.held_shares import HELD

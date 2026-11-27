@@ -8,9 +8,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import frappe
-from first_wave import caseworker_session
 from generator_caseworker_surfaces import published_items
 from generator_snapshot import BENCH
+from rehearsal_bench import caseworker_session
 
 from ucm_migration_loader import api
 from ucm_migration_loader.publication_jobs import request as operator_command

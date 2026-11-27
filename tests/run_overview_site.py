@@ -259,7 +259,7 @@ def _drop(config: Path, table: str) -> None:
 
 
 def handover(site: str, run: str, config: Path, table: str, keep: bool) -> dict:
-	from transport import publisher_identity, tls_site
+	from rehearsal_bench import publisher_identity, tls_site
 
 	before = record(run)
 	previous = before.publishing_user

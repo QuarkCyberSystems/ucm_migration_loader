@@ -210,7 +210,7 @@ def stage(path: str, run: str):
 		from .application import check_closed
 
 		ctx = frappe.get_doc("Context", context, for_update=True)
-		check_closed(ctx, pilot=False)
+		check_closed(ctx)
 		for dt in ORDER:
 			where = selection(dt)
 			# nosemgrep: frappe-semgrep-rules.rules.security.frappe-sql-format-injection -- reviewed: the DocType is one of ORDER and the condition is built by selection() from constants; the context is a parameter
@@ -321,7 +321,6 @@ def rebuild_index(run: str):
 
 
 def remove_after_discard(record):
-	if json.loads(record.manifest_json).get("format") == FORMAT:
-		path = local_publication(record.name)
-		frappe.db.after_commit.add(lambda: path.unlink(missing_ok=True))
-		frappe.db.after_commit.add(lambda: publication_index.index_path(path).unlink(missing_ok=True))
+	path = local_publication(record.name)
+	frappe.db.after_commit.add(lambda: path.unlink(missing_ok=True))
+	frappe.db.after_commit.add(lambda: publication_index.index_path(path).unlink(missing_ok=True))

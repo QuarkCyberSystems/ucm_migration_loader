@@ -1,4 +1,4 @@
-"""Read one frozen MariaDB publication and submit its batches to a UCM site."""
+"""Seal one delegation of a publishing database into a file, and take it to a UCM site."""
 
 import argparse
 import hashlib
@@ -13,87 +13,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .contract import (
-	CONSENT_PROFILE,
-	FIELDS,
-	MAX_BYTES,
-	MAX_DOCUMENTS,
-	OTHER_NAMES,
-	PROFILE,
-	PROFILES,
-	check_code,
-	check_uuid,
-	digest,
-	encoded,
-	plan,
-	schema_signatures,
-)
-from .scope import assess
-
-
-def publisher_schema(connection, profile=PROFILE):
-	with connection.cursor() as cursor:
-
-		def read_ddl(sql):
-			cursor.execute(sql)
-			return cursor.fetchone()[1]
-
-		return schema_signatures(read_ddl, profile)
-
-
-def publication(connection, context, profile=PROFILE):
-	"""Connection must expose the frozen UCM schema. Select only the pilot field inventory."""
-	check_uuid(context)
-	with connection.cursor(pymysql.cursors.DictCursor) as cursor:
-		for dt, fields in FIELDS.items():
-			columns = ", ".join(("name", "context_tech_id", *fields))
-			if dt == "Case Member":
-				# Membership belongs to its case, including publishing rows whose fetched context is NULL.
-				columns = ", ".join(f"m.{col}" for col in ("name", *fields))
-				cursor.execute(
-					f"""select {columns}, m.context_tech_id as published_context,
-                        c.context_tech_id from `tabCase Member` m left join tabCase c on c.name=m.case_tech_id
-                        where c.context_tech_id=%s or m.context_tech_id=%s order by m.name limit %s""",
-					(context, context, MAX_DOCUMENTS + 1),
-				)
-			else:
-				cursor.execute(
-					f"select {columns} from `tab{dt}` where context_tech_id=%s order by name limit %s",
-					(context, MAX_DOCUMENTS + 1),
-				)
-			for row in cursor.fetchall():
-				if row.pop("published_context", None) not in (None, context):
-					raise ValueError("Case Member context differs from its case")
-				if dt == "Person":
-					cols = ", ".join(("name", "idx", *OTHER_NAMES))
-					cursor.execute(
-						f"""select {cols} from `tabPerson Other Name` where parent=%s
-                        and parenttype='Person' and parentfield='person_other_names' order by idx, name""",
-						row["name"],
-					)
-					row["person_other_names"] = list(cursor.fetchall())
-				yield {"doctype": dt, **row}
-
-	if profile == CONSENT_PROFILE:
-		from .consent_publication import consent_documents
-
-		yield from consent_documents(connection, context)
-
-
-def send(call, manifest, batches, max_batches=None):
-	receipt = call("begin", manifest=manifest)
-	run = receipt["run"]
-	if run != digest(manifest) or not 0 <= receipt["received"] <= len(batches):
-		raise ValueError("Target receipt does not match this publication")
-	if receipt.get("state") in ("Rejected", "Discarded"):
-		raise ValueError(f"Run is {receipt['state']}")
-	first = receipt["received"]
-	stop = len(batches) if max_batches is None else min(first + max_batches, len(batches))
-	for index in range(first, stop):
-		result = call("upload", run=run, sequence=index + 1, documents=batches[index])
-		if result["digest"] != manifest["batches"][index] or result["sequence"] != index + 1:
-			raise ValueError("Unexpected batch receipt")
-	return call("status", run=run)
+from .contract import check_code, digest
 
 
 def hand_over_quality(call, args):
@@ -160,8 +80,6 @@ def run(argv: list[str] | None = None, readable: bool = False):
 		"action",
 		type=lambda value: aliases.get(value, value),
 		choices=[
-			"plan",
-			"assess",
 			"source-inventory",
 			"upload-order",
 			"prepare",
@@ -170,12 +88,9 @@ def run(argv: list[str] | None = None, readable: bool = False):
 			"propose",
 			"send-publication",
 			"transfer-status",
-			"push",
 			"status",
 			"report",
-			"reconcile",
 			"quality",
-			"verify",
 			"apply",
 			"pause",
 			"activate",
@@ -187,7 +102,6 @@ def run(argv: list[str] | None = None, readable: bool = False):
 		type=Path,
 		help="Private PyMySQL connection JSON for the publisher",
 	)
-	parser.add_argument("--profile", choices=PROFILES, default=PROFILE)
 	parser.add_argument("--site", required=True)
 	parser.add_argument("--snapshot")
 	parser.add_argument(
@@ -205,15 +119,13 @@ def run(argv: list[str] | None = None, readable: bool = False):
 	parser.add_argument("--sequence", type=int, help="Recorded batch number")
 	parser.add_argument("--item", type=int, help="One-based position inside the batch")
 	parser.add_argument("--private-files", type=Path)
-	parser.add_argument("--attempt", type=int, default=1, help="Increment for a fresh run after discard")
 	parser.add_argument("--context")
 	parser.add_argument("--url", help="Target HTTPS base URL")
 	parser.add_argument("--run")
-	parser.add_argument("--manifest-out", type=Path, help="Write the plan for target-side approval")
 	parser.add_argument(
 		"--max-batches",
 		type=int,
-		help="Upload or apply at most this many new batches in this invocation",
+		help="Apply at most this many new batches, or send at most this many pieces, in this invocation",
 	)
 	parser.add_argument(
 		"--progress",
@@ -221,8 +133,7 @@ def run(argv: list[str] | None = None, readable: bool = False):
 		help="Print sealed transfer byte checkpoints on stderr",
 	)
 	parser.add_argument("--batch-size", type=int, default=100)
-	parser.add_argument("--batch-bytes", type=int, default=MAX_BYTES)
-	parser.add_argument("--expected", type=Path, help="Independently reviewed pilot rows for reconcile")
+	parser.add_argument("--batch-bytes", type=int, default=256 * 1024)
 	parser.add_argument(
 		"--quality-out",
 		type=Path,
@@ -252,15 +163,10 @@ def run(argv: list[str] | None = None, readable: bool = False):
 		args.private_files and args.action != "prepare"
 	):
 		parser.error("Supply --publication-out for prepare and --private-files when attachments are present")
-	if (args.action == "reconcile") != bool(args.expected):
-		parser.error("Use --expected with reconcile")
-
 	if args.max_batches is not None and (
-		args.action not in ("push", "apply", "send-publication") or args.max_batches < 1
+		args.action not in ("apply", "send-publication") or args.max_batches < 1
 	):
-		parser.error("--max-batches requires push or apply and a positive limit")
-	if args.manifest_out and args.action != "plan":
-		parser.error("--manifest-out requires plan")
+		parser.error("--max-batches requires apply or send-publication and a positive limit")
 	if args.action == "locate-item":
 		from .frozen import locate_item
 
@@ -391,14 +297,7 @@ def run(argv: list[str] | None = None, readable: bool = False):
 		show(args.action, receipt, readable)
 		return
 
-	if args.action in (
-		"assess",
-		"source-inventory",
-		"upload-order",
-		"prepare",
-		"plan",
-		"push",
-	):
+	if args.action in ("source-inventory", "upload-order", "prepare"):
 		if not all((args.source_config, args.context, args.snapshot)):
 			parser.error("Supply --source-config, --context and --snapshot")
 		with pymysql.connect(**json.loads(args.source_config.read_text())) as conn:
@@ -454,79 +353,7 @@ def run(argv: list[str] | None = None, readable: bool = False):
 					)
 				)
 				return
-			scope = assess(conn, args.context, args.profile)
-			if args.action == "assess":
-				print(
-					json.dumps(
-						{
-							"site": args.site,
-							"context": args.context,
-							"snapshot": args.snapshot,
-							**scope,
-						}
-					)
-				)
-				return
-			if not scope["eligible_for_push"] and (args.action == "push" or args.manifest_out):
-				print(
-					json.dumps(
-						{
-							"site": args.site,
-							"context": args.context,
-							"snapshot": args.snapshot,
-							**scope,
-						}
-					)
-				)
-				raise SystemExit(1)
-			schema = publisher_schema(conn, args.profile)
-			manifest, batches = plan(
-				args.site,
-				args.snapshot,
-				args.context,
-				publication(conn, args.context, args.profile),
-				args.batch_size,
-				args.batch_bytes,
-				args.attempt,
-				args.profile,
-			)
-		manifest["schema"] = schema
-		result = {
-			**scope,
-			"run": digest(manifest),
-			"batches": len(batches),
-			"documents": sum(len(batch) for batch in batches),
-			"payload_bytes": sum(len(encoded(batch)) for batch in batches),
-			"rows_by_type": {
-				**{
-					dt: sum(doc["doctype"] == dt for batch in batches for doc in batch)
-					for dt in PROFILES[args.profile]
-				},
-				"Person Other Name": sum(
-					len(doc.get("person_other_names", [])) for batch in batches for doc in batch
-				),
-			},
-		}
-		if args.manifest_out:
-			args.manifest_out.write_text(json.dumps(manifest, indent=2) + "\n")
-		if args.action == "push":
-			result = send(call, manifest, batches, args.max_batches)
-	elif args.action == "reconcile":
-		from .evidence import compare_expected
-
-		if not args.run:
-			parser.error("Supply --run")
-		target = call("report", run=args.run)
-		if target["run"] != args.run:
-			raise ValueError("Target returned a different run")
-		expected = json.loads(args.expected.read_text())
-		if expected.get("site") != args.site:
-			raise ValueError("Expected rows target a different site")
-		result = compare_expected(expected, target)
-		if not result["matched"]:
-			print(json.dumps(result))
-			raise SystemExit(1)
-	elif args.action == "quality":
+	if args.action == "quality":
 		if not args.run:
 			parser.error("Supply --run")
 		result = hand_over_quality(call, args)

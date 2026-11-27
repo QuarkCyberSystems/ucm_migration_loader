@@ -75,9 +75,9 @@ class TestQualityAPI(IntegrationTestCase):
 		run = make_run(state="Publication staged").name
 		self.assertRaisesRegex(ValueError, "no verification report", api.quality, run)
 
-	def test_a_pilot_run_has_no_metrics(self):
+	def test_a_run_that_is_no_sealed_publication_has_no_metrics(self):
 		run = make_run(report=REPORT).name
-		frappe.db.set_value(api.RUN, run, "manifest_json", json.dumps({"profile": "pilot"}))
+		frappe.db.set_value(api.RUN, run, "manifest_json", json.dumps({"profile": "earlier"}))
 		self.assertRaisesRegex(ValueError, "sealed publications", api.quality, run)
 
 	def test_the_run_records_the_hand_over(self):

@@ -12,7 +12,7 @@ from pathlib import Path
 import frappe
 import pymysql
 from generator_snapshot import BENCH, scalar, site_connection, site_snapshot
-from transport import publication_reader
+from rehearsal_bench import publication_reader
 
 
 def check_published_rows(path, expected):

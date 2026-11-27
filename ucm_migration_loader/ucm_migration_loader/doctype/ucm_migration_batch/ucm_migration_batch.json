@@ -9,8 +9,6 @@
   "migration_run",
   "sequence_number",
   "digest",
-  "payload",
-  "target_digest",
   "write_route",
   "parent_doctype",
   "parent_rows",
@@ -52,18 +50,6 @@
    "fieldname": "digest",
    "fieldtype": "Data",
    "label": "Digest",
-   "read_only": 1
-  },
-  {
-   "fieldname": "payload",
-   "fieldtype": "Long Text",
-   "label": "Payload",
-   "read_only": 1
-  },
-  {
-   "fieldname": "target_digest",
-   "fieldtype": "Data",
-   "label": "Applied Row Digest",
    "read_only": 1
   },
   {
@@ -140,7 +126,7 @@
   }
  ],
  "links": [],
- "modified": "2026-11-27 15:34:59.596073",
+ "modified": "2026-11-27 16:42:27.208461",
  "modified_by": "Administrator",
  "module": "UCM Migration Loader",
  "name": "UCM Migration Batch",

@@ -35,27 +35,22 @@ frappe.ui.form.on("UCM Migration Run", {
 				group
 			);
 		}
-		if (state === "Staged") action("Verify", "verify");
-		if (["Verified", "Publication staged"].includes(state))
-			action("Apply hidden batches", "apply");
-		if (["Applying", "Publication applying"].includes(state)) {
+		if (state === "Publication staged") action("Apply hidden batches", "apply");
+		if (state === "Publication applying") {
 			action("Pause after current batch", "pause");
 			action("Resume from last receipt", "apply");
 		}
-		if (["Paused", "Publication paused"].includes(state))
-			action("Resume from last receipt", "apply");
-		if (["Ready", "Publication ready"].includes(state)) {
+		if (state === "Publication paused") action("Resume from last receipt", "apply");
+		if (state === "Publication ready") {
 			const activate = action(
 				"Activate delegation",
 				"activate",
 				"Open this delegation to its authorized users after reviewing reconciliation?"
 			);
-			// the decision a sealed publication's run waits for, beside the menu that holds every action
-			if (state === "Publication ready") {
-				frm.add_custom_button(__("Activate delegation"), activate).addClass("btn-primary");
-			}
+			// the decision the run waits for, beside the menu that holds every action
+			frm.add_custom_button(__("Activate delegation"), activate).addClass("btn-primary");
 		}
-		if (["Cleaning", "Publication cleaning"].includes(state)) {
+		if (state === "Publication cleaning") {
 			action("Resume cleanup", "discard");
 		} else if (state === PROPOSED) {
 			action(
@@ -300,11 +295,9 @@ function show_batch_progress(frm) {
 	const remaining = total - applied;
 	const counts = [applied, total, remaining].map((n) => n.toLocaleString());
 	let message = __("{0} of {1} batches finished · {2} remaining", counts);
-	if (frm.doc.state === "Receiving") {
-		message += " · " + __("{0} received", [Number(frm.doc.received || 0).toLocaleString()]);
-	} else if (frm.doc.state === "Publication ready" && remaining > 0) {
+	if (frm.doc.state === "Publication ready" && remaining > 0) {
 		message += " · " + __("Remaining batches run at activation.");
-	} else if (["Cleaning", "Publication cleaning", "Discarded"].includes(frm.doc.state)) {
+	} else if (["Publication cleaning", "Discarded"].includes(frm.doc.state)) {
 		message = __("{0} of {1} batches currently applied", counts);
 	}
 	if (frm.doc.worker_phase && frm.doc.worker_seen) {

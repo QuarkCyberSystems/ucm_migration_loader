@@ -416,7 +416,7 @@ def _write(
 				# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the pause and its reason, kept for the operator who resumes the run
 				frappe.db.commit()
 				break
-			check_closed(ctx, pilot=False)
+			check_closed(ctx)
 			if not record.applied:
 				step = monotonic()
 				documents.verify_sensitive_policy(sealed.manifest)
@@ -577,7 +577,7 @@ def _derive_step(run: str, *, ticket: int | None = None) -> dict | None:
 	if not _mine(record, ticket):
 		frappe.db.rollback()
 		return None
-	check_closed(ctx, pilot=False)
+	check_closed(ctx)
 	_mark(run, "Deriving", state=APPLYING, finding=None)
 	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: shows the step on the form and frees the run for a pause while the rebuilds work
 	frappe.db.commit()
@@ -963,7 +963,7 @@ def _conclude(run: str, sealed: _Sealed, last: int, *, ticket: int | None = None
 	if not _mine(record, ticket) or (record.applied or 0) != last or (record.reconcile_cursor or 0) != last:
 		frappe.db.rollback()
 		return None
-	check_closed(ctx, pilot=False)
+	check_closed(ctx)
 	documents.verify_sensitive_policy(manifest)
 	progress = _progress(record)
 	tally = progress.get("compared") or _tally()
@@ -1125,7 +1125,7 @@ def activate(run: str, commit: bool = True) -> dict:
 			report = json.loads(record.reconciliation_json or "{}")
 			if record.state != READY or report.get("route") != ROUTE or report.get("findings"):
 				raise ValueError(_("Activation follows a verification that found nothing"))
-			check_closed(ctx, pilot=False)
+			check_closed(ctx)
 			documents.verify_sensitive_policy(manifest)
 			applied = record.applied
 			if stored_counts(ctx.name, manifest) != report["stored_rows"] or not _receipt_chain(
@@ -1258,7 +1258,7 @@ def discard(run: str, *, ticket: int | None = None, budget: float | None = None)
 	elif record.state != CLEANING or record.dispatch_id != ticket:
 		frappe.db.rollback()
 		return {"run": run, "state": record.state, "removed": {}}
-	check_closed(ctx, pilot=False)
+	check_closed(ctx)
 	_mark(run, "Removing rows")
 	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the run is marked as cleaning before its rows go, so that no worker applies to it meanwhile
 	frappe.db.commit()
