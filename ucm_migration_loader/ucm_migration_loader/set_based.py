@@ -12,6 +12,11 @@ of which reads the delegation in sets:
 
 `discard` removes a hidden delegation by primary key in chunks, and needs no change to Frappe.
 
+An operator chooses the route for a staged run (write_routes). The migration queue then carries the run with
+`job`: each job takes one step from where the last one left it, and the steps that read the publication stop
+after BUDGET seconds, so that a pause is answered soon and no job outlives its worker. `apply`, `derive` and
+`verify` are the same steps called from the bench, one at a time.
+
 No controller runs for a copied row, so every rule a save applies has to be named here: `integrity` lists the
 ones checked as queries, and the module's tests compare a load by this route with the same load through the
 documents. Sensitivity tags, assignments and shares stay on the document route: their rules read other
@@ -21,10 +26,9 @@ delegations, consent and clearances, and they are about one row in a hundred.
 import hashlib
 import json
 import os
-import sqlite3
 import tempfile
 from collections import Counter, defaultdict
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
 from time import monotonic
@@ -33,11 +37,11 @@ import frappe
 from frappe import _
 from frappe.utils import get_datetime, getdate, now_datetime
 
-from ucm_migration_loader import api
+from ucm_migration_loader import api, publication_index
 from ucm_migration_loader.application import check_closed, lock_run
-from ucm_migration_loader.frozen import CHILDREN, LOOKUPS, ORDER, selection, verify_connection
+from ucm_migration_loader.frozen import CHILDREN, LOOKUPS, ORDER, selection
 from ucm_migration_loader.publication_receiver import (
-	local_publication,
+	indexed_publication,
 	release_differences,
 	remove_after_discard,
 	schema_differences,
@@ -48,37 +52,56 @@ DOCUMENT = "Document API"
 # Their rules read clearances, consent and other delegations: written through the documents on every route
 THROUGH_DOCUMENTS = frozenset(("Record Tag",))
 DEFERRED = ("ToDo", "Record Share")  # released at activation
-STAGED, APPLYING, READY, CLEANING = (
+STAGED, APPLYING, PAUSED, READY, CLEANING = (
 	"Publication staged",
 	"Publication applying",
+	"Publication paused",
 	"Publication ready",
 	"Publication cleaning",
 )
-HIDDEN = (STAGED, APPLYING, "Publication paused", READY, CLEANING)
+HIDDEN = (STAGED, APPLYING, PAUSED, READY, CLEANING)
 INSERT_ROWS = 500  # rows per INSERT statement
 COMMIT_ROWS = 5000  # parent rows per transaction: small enough for the replicas to follow
 DELETE_ROWS = 5000
+SAMPLE_EVERY = 50  # one record in so many goes through the document route's check
+BUDGET = 120  # seconds of batches a queued job takes before the next job continues
+CHECKPOINT = 10  # seconds between two saves of a verification's cursor
+# a rebuild, the rule queries and the activation of a large delegation cannot be cut in two
+JOB_TIMEOUT = 3600
 NUMERIC = ("Int", "Float", "Currency", "Percent", "Check", "Rating", "Duration")
 NO_COLUMN = ("Section Break", "Column Break", "Tab Break", "HTML", "Button", "Heading", "Fold")
 
 
+class _Sealed:
+	"""The staged file, read only, in one snapshot. Every batch read is checked against the hash index written
+	when the whole file was verified at staging, so a job does not hash the file again."""
+
+	def __init__(self, db, hashes, manifest: dict, path, stamp):
+		self.db, self.hashes, self.manifest, self.path, self.stamp = db, hashes, manifest, path, stamp
+
+	def batches(self, after: int, upto: int | None = None):
+		"""(sequence, sha, payload) of the batches after one and up to another, in order."""
+		total = self.manifest["batches"]
+		for sequence in range(after + 1, (total if upto is None else min(upto, total)) + 1):
+			sha, payload = publication_index.read_batch(self.db, self.hashes, sequence, total)
+			yield sequence, sha, payload
+
+	def unchanged(self) -> None:
+		publication_index.check_identity(self.path, self.stamp)
+
+
 @contextmanager
 def _publication(run: str):
-	"""The staged file, read only, in one snapshot."""
-	uri = local_publication(run).resolve(strict=True).as_uri() + "?mode=ro"
-	with closing(sqlite3.connect(uri, uri=True)) as db:
-		db.execute("pragma trusted_schema=OFF")
-		db.execute("begin")
-		yield db
-
-
-def _checked_manifest(db, run: str) -> dict:
-	manifest = verify_connection(db, run)
-	if release_differences(manifest):
-		raise ValueError(_("Target application versions differ from the reviewed publication"))
-	if schema_differences(manifest):
-		raise ValueError(_("Target schema differs from publication"))
-	return manifest
+	"""The run's staged file, opened for one step, on a target that still is the one it was reviewed for."""
+	_ctx, record = lock_run(run)
+	with indexed_publication(run, record) as (db, hashes, manifest, path, stamp):
+		if release_differences(manifest):
+			raise ValueError(_("Target application versions differ from the reviewed publication"))
+		if schema_differences(manifest):
+			raise ValueError(_("Target schema differs from publication"))
+		# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: frees the run for a pause before a long read; nothing is pending but the index stamp of a publication staged before the index existed
+		frappe.db.commit()
+		yield _Sealed(db, hashes, manifest, path, stamp)
 
 
 def _same_target(manifest: dict, ctx, record) -> None:
@@ -249,7 +272,7 @@ def _item_rows(db, cache: dict, context: str, doctype: str, item: dict, rows: di
 def _group_rows(db, cache: dict, context: str, doctype: str, group: list) -> dict[str, list[dict]]:
 	"""The rows of a group of batches, per table, parents first."""
 	rows = defaultdict(list)
-	for sequence, _sha, items in group:
+	for sequence, _sha, items, _size in group:
 		for position, item in enumerate(items, 1):
 			try:
 				_item_rows(db, cache, context, doctype, item, rows)
@@ -259,11 +282,13 @@ def _group_rows(db, cache: dict, context: str, doctype: str, group: list) -> dic
 	return rows
 
 
-def _receipts(record, group: list, doctype: str, route: str) -> None:
-	"""A receipt per batch, as the document route leaves: written in one statement, the loader's own DocType."""
+def _receipts(record, group: list, doctype: str, route: str, seconds: float = 0) -> None:
+	"""A receipt per batch, as the document route leaves: written in one statement, the loader's own DocType.
+	The time a group took is shared among its batches by their records."""
 	from ucm_migration_loader.display_ids import receipt_id
 
 	now, user = now_datetime(), frappe.session.user
+	records = sum(len(items) for _sequence, _sha, items, _size in group) or 1
 	fields = [
 		"name",
 		"creation",
@@ -278,6 +303,9 @@ def _receipts(record, group: list, doctype: str, route: str) -> None:
 		"digest",
 		"write_route",
 		"parent_doctype",
+		"parent_rows",
+		"payload_bytes",
+		"write_seconds",
 	]
 	frappe.db.bulk_insert(
 		api.BATCH,
@@ -297,96 +325,133 @@ def _receipts(record, group: list, doctype: str, route: str) -> None:
 				sha,
 				route,
 				doctype,
+				len(items),
+				size,
+				seconds * len(items) / records,
 			)
-			for sequence, sha, _items in group
+			for sequence, sha, items, size in group
 		),
 	)
 
 
-def _groups(db, start: int, stop_at: int | None):
-	"""Consecutive batches of one DocType, up to COMMIT_ROWS parents: what one transaction writes."""
+def _groups(batches):
+	"""Consecutive batches of one DocType, up to COMMIT_ROWS parents: what one transaction writes. `batches`
+	are the business batches still to write, as (sequence, sha, payload)."""
 	group, doctype, size = [], None, 0
-	for sequence, sha, payload in db.execute(
-		"select sequence, sha, payload from batches where sequence > ? order by sequence", (start,)
-	):
-		if stop_at is not None and sequence > stop_at:
-			break
+	for sequence, sha, payload in batches:
 		items = json.loads(payload)
 		kind = items[0]["doctype"]
 		if kind in DEFERRED:
-			break
+			raise ValueError(_("Assignments and shares must close the publication"))
 		if kind not in ORDER:
 			raise ValueError(_("Unsupported business batch"))
 		if group and (kind != doctype or size >= COMMIT_ROWS):
 			yield doctype, group
 			group, size = [], 0
 		doctype = kind
-		group.append((sequence, sha, items))
+		group.append((sequence, sha, items, len(payload)))
 		size += len(items)
 	if group:
 		yield doctype, group
 
 
-def apply(run: str, stop_at: int | None = None) -> dict:
-	"""Write the business batches not yet applied, from the last committed one on. Each group of batches, its
-	receipts and the run's cursor commit together, so an interrupted apply resumes where it stopped."""
+def _progress(record) -> dict:
+	"""What the steps after the last write have done, kept on the run between jobs."""
+	progress = json.loads(record.get("reconcile_counts") or "{}")
+	return progress if progress.get("route") == ROUTE else {"route": ROUTE}
+
+
+def _mark(run: str, phase: str, **values) -> None:
+	"""Show on the run what its worker is doing. The phase is stored in English and translated on the form."""
+	frappe.db.set_value(api.RUN, run, {"worker_phase": phase, "worker_seen": now_datetime(), **values})
+
+
+def _mine(record, ticket: int | None) -> bool:
+	"""Whether a job still holds the run: no pause, discard or newer request has taken it."""
+	return record.state in (STAGED, APPLYING) and (ticket is None or record.dispatch_id == ticket)
+
+
+def _write(
+	run: str, sealed: _Sealed, upto: int, *, ticket: int | None = None, deadline: float | None = None
+) -> dict:
+	"""Write the business batches not yet applied, up to one of them, from the last committed one on. Each group
+	of batches, its receipts and the run's cursor commit together, so an interrupted write resumes where it
+	stopped."""
 	from ucm.permissions import counts
 
+	from ucm_migration_loader import migration_load
 	from ucm_migration_loader import publication_worker as documents
 	from ucm_migration_loader.publication_prerequisites import verify_links
 
-	api._operator()
-	written, seconds, started = Counter(), Counter(), monotonic()
-	with _publication(run) as db:
-		manifest = _checked_manifest(db, run)
-		seconds["check the sealed file"] = monotonic() - started
-		cache = {}
-		_ctx, record = lock_run(run)
-		start = record.applied or 0
-		frappe.db.rollback()
-		for doctype, group in _groups(db, start, stop_at):
-			try:
-				ctx, record = lock_run(run)
-				_same_target(manifest, ctx, record)
-				if record.state not in (STAGED, APPLYING) or (record.applied or 0) != group[0][0] - 1:
-					frappe.db.rollback()
-					break  # paused, superseded or moved by another worker
-				check_closed(ctx, pilot=False)
-				if not record.applied:
-					step = monotonic()
-					documents.verify_sensitive_policy(manifest)
-					verify_links(db)
-					seconds["resolve every reference"] = monotonic() - step
-				step = monotonic()
-				if doctype in THROUGH_DOCUMENTS:
-					for sequence, _sha, items in group:
-						documents.insert_batch(db, ctx.name, items, sequence)
-					route = DOCUMENT
-					written[doctype] += sum(len(items) for _s, _h, items in group)
-				else:
-					rows = _group_rows(db, cache, ctx.name, doctype, group)
-					seconds["of which reading the file and preparing rows"] += monotonic() - step
-					names = tuple(row["name"] for row in rows[doctype])
-					# the counts of the home move with the records, in the same transaction (ucm.permissions.counts)
-					with counts.moving(doctype, "x.name in %(names)s", {"names": names}):
-						for table, table_rows in rows.items():
-							_insert(table, table_rows)
-							written[table] += len(table_rows)
-					route = ROUTE
-				_receipts(record, group, doctype, route)
-				frappe.db.set_value(
-					api.RUN, run, {"state": APPLYING, "applied": group[-1][0], "finding": None}
-				)
-				# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: a load in small transactions by design: the rows, their receipts and the cursor commit together, and the replicas follow
-				frappe.db.commit()
-				seconds["write " + doctype] += monotonic() - step
-			except Exception:
+	written, seconds, cache = Counter(), Counter(), {}
+	_ctx, record = lock_run(run)
+	start = record.applied or 0
+	frappe.db.rollback()
+	for doctype, group in _groups(sealed.batches(start, upto)):
+		try:
+			ctx, record = lock_run(run)
+			_same_target(sealed.manifest, ctx, record)
+			if (
+				not _mine(record, ticket)
+				or (record.applied or 0) != group[0][0] - 1
+				or (deadline is not None and monotonic() > deadline)
+			):
 				frappe.db.rollback()
-				raise
+				break  # paused, superseded, moved by another worker or out of time: the next job continues
+			if reason := migration_load.pressure():
+				_mark(run, "Paused for live load", state=PAUSED, finding=reason)
+				# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the pause and its reason, kept for the operator who resumes the run
+				frappe.db.commit()
+				break
+			check_closed(ctx, pilot=False)
+			if not record.applied:
+				step = monotonic()
+				documents.verify_sensitive_policy(sealed.manifest)
+				verify_links(sealed.db)
+				seconds["resolve every reference"] = monotonic() - step
+			step = monotonic()
+			if doctype in THROUGH_DOCUMENTS:
+				for sequence, _sha, items, _size in group:
+					documents.insert_batch(sealed.db, ctx.name, items, sequence)
+				route = DOCUMENT
+				written[doctype] += sum(len(items) for _sequence, _sha, items, _size in group)
+			else:
+				rows = _group_rows(sealed.db, cache, ctx.name, doctype, group)
+				seconds["of which reading the file and preparing rows"] += monotonic() - step
+				names = tuple(row["name"] for row in rows[doctype])
+				# the counts of the home move with the records, in the same transaction (ucm.permissions.counts)
+				with counts.moving(doctype, "x.name in %(names)s", {"names": names}):
+					for table, table_rows in rows.items():
+						_insert(table, table_rows)
+						written[table] += len(table_rows)
+				route = ROUTE
+			_receipts(record, group, doctype, route, monotonic() - step)
+			sealed.unchanged()
+			_mark(run, "Writing " + doctype, state=APPLYING, applied=group[-1][0], finding=None)
+			# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: a load in small transactions by design: the rows, their receipts and the cursor commit together, and the replicas follow
+			frappe.db.commit()
+			seconds["write " + doctype] += monotonic() - step
+		except Exception:
+			frappe.db.rollback()
+			raise
 	return {
-		**api._result(api._record(run)),
 		"rows_written": dict(written),
 		"seconds": {step: round(value, 2) for step, value in seconds.items()},
+	}
+
+
+def apply(run: str, stop_at: int | None = None) -> dict:
+	"""Write the business batches not yet applied, all of them or up to `stop_at`, in one call from the bench."""
+	api._operator()
+	started = monotonic()
+	with _publication(run) as sealed:
+		opened = monotonic() - started
+		last = _business_batches(sealed.db)
+		out = _write(run, sealed, last if stop_at is None else min(last, stop_at))
+	return {
+		**api._result(api._record(run)),
+		"rows_written": out["rows_written"],
+		"seconds": {"open the sealed file": round(opened, 2), **out["seconds"]},
 		"total_seconds": round(monotonic() - started, 2),
 	}
 
@@ -448,10 +513,10 @@ def _complete_places(context: str) -> int:
 	)
 
 
-def derive(run: str) -> dict:
-	"""The values a save derives, for this delegation's rows, with UCM's own set-based rebuilds. Returns the rows
+def _derive(context: str) -> dict:
+	"""The values a save derives, for one delegation's rows, with UCM's own set-based rebuilds. Returns the rows
 	each one changed: none, where the publication already carried what UCM computes. A rebuild is called only
-	where rows differ, and writes only those."""
+	where rows differ, and writes only those, so the step can be run again."""
 	from ucm.ucm.doctype.activity.activity import COUNTRY, sync_all_countries
 	from ucm.ucm.doctype.activity_detail.latest_state import BATCH, refresh_persons
 	from ucm.ucm.doctype.protection_department.protection_department import (
@@ -461,12 +526,6 @@ def derive(run: str) -> dict:
 	)
 	from ucm.ucm.doctype.record_share.record_share import rebuild_activity_facts
 
-	api._operator()
-	ctx, record = lock_run(run)
-	if record.state != APPLYING:
-		raise ValueError(_("Derive follows the last business batch of an applying run"))
-	check_closed(ctx, pilot=False)
-	context, started = ctx.name, monotonic()
 	scope, values = "a.context_tech_id = %(context)s", {"context": context}
 	changed = {"place geography": _complete_places(context)}
 	stale = sum(_stale(carrier, FIELD, context) for carrier in ACTIVITY_CARRIERS)
@@ -483,7 +542,40 @@ def derive(run: str) -> dict:
 	changed["latest state marks"] = int(_marks(context) != before)
 	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: a step of the load run from the bench or a worker, committed whole; UCM's rebuilds above commit per chunk themselves
 	frappe.db.commit()
-	return {"changed": changed, "seconds": round(monotonic() - started, 2)}
+	return changed
+
+
+def _derive_step(run: str, *, ticket: int | None = None) -> dict | None:
+	"""Derive the delegation's values and note on the run that it is done. Nothing, where the run was taken."""
+	ctx, record = lock_run(run)
+	if not _mine(record, ticket):
+		frappe.db.rollback()
+		return None
+	check_closed(ctx, pilot=False)
+	_mark(run, "Deriving", state=APPLYING, finding=None)
+	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: shows the step on the form and frees the run for a pause while the rebuilds work
+	frappe.db.commit()
+	started = monotonic()
+	changed = _derive(ctx.name)
+	seconds = round(monotonic() - started, 2)
+	_ctx, record = lock_run(run)
+	if not _mine(record, ticket):
+		frappe.db.rollback()
+		return None
+	progress = {"route": ROUTE, "derived": changed, "derive_seconds": seconds}
+	_mark(run, "Deriving", reconcile_cursor=0, reconcile_counts=json.dumps(progress))
+	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the end of a step, so that the next job starts at the verification
+	frappe.db.commit()
+	return {"changed": changed, "seconds": seconds}
+
+
+def derive(run: str) -> dict:
+	"""Derive the values of an applying run's delegation, in one call from the bench."""
+	api._operator()
+	_ctx, record = lock_run(run)
+	if record.state != APPLYING:
+		raise ValueError(_("Derive follows the last business batch of an applying run"))
+	return _derive_step(run)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -653,57 +745,80 @@ def _equal(stored, published) -> bool:
 	return str(stored) == str(published)
 
 
-def compare(db, context: str, applied: int) -> dict:
-	"""Every stored column against the publication, read back a batch at a time. Returns the rows compared per
-	table, and for the fields that differ how many rows and the first places (batch and item, never values)."""
+def _tally() -> dict:
+	"""What a verification has found so far: kept on the run as JSON between jobs."""
+	return {
+		"rows_compared": {},
+		"rows_missing": {},
+		"fields_differing": {},
+		"first_place": {},
+		"place_fields_completed": 0,
+		"records_seen": 0,
+		"records_sampled": 0,
+		"seconds": {"compare": 0.0, "sample": 0.0},
+	}
+
+
+def _add(counts: dict, key: str, number: int = 1) -> None:
+	counts[key] = counts.get(key, 0) + number
+
+
+def _compare_batch(db, cache: dict, sequence: int, items: list, tally: dict) -> None:
+	"""Every stored column of a batch's rows against the publication. The tally takes the rows compared per
+	table, and for the fields that differ how many rows and the first place (batch and item, never values)."""
 	from ucm.ucm.doctype.activity.activity import ADDRESSES
 
-	cache, compared, differing, places, missing = {}, Counter(), Counter(), {}, Counter()
-	completed = 0
-	for sequence, payload in db.execute(
-		"select sequence, payload from batches where sequence <= ? order by sequence", (applied,)
-	):
-		expected = defaultdict(dict)
-		where = {}
-		for position, item in enumerate(json.loads(payload), 1):
-			published = [(item["doctype"], item["row"])]
-			published += [(child, row) for child, rows in item["children"].items() for row in rows]
-			published += [("File", attachment["row"]) for attachment in item.get("files", [])]
-			for doctype, raw in published:
-				expected[doctype][str(raw["name"])] = stored_row(db, cache, doctype, raw)
-				where[doctype, str(raw["name"])] = position
-		for doctype, rows in expected.items():
-			fields = list(next(iter(rows.values())))
-			columns = ", ".join(f"`{field}`" for field in fields)
-			# nosemgrep: frappe-semgrep-rules.rules.security.frappe-sql-format-injection -- reviewed: the table is a DocType of the publication profile and the columns were checked against the table's own (stored_row); the names are a parameter
-			stored = frappe.db.sql(
-				f"select {columns} from `tab{doctype}` where name in %(names)s",
-				{"names": tuple(rows)},
-				as_dict=True,
-			)
-			found = {str(row["name"]): row for row in stored}
-			compared[doctype] += len(rows)
-			for name, row in rows.items():
-				if name not in found:
-					missing[doctype] += 1
+	expected, where = defaultdict(dict), {}
+	for position, item in enumerate(items, 1):
+		published = [(item["doctype"], item["row"])]
+		published += [(child, row) for child, rows in item["children"].items() for row in rows]
+		published += [("File", attachment["row"]) for attachment in item.get("files", [])]
+		for doctype, raw in published:
+			expected[doctype][str(raw["name"])] = stored_row(db, cache, doctype, raw)
+			where[doctype, str(raw["name"])] = position
+	for doctype, rows in expected.items():
+		fields = list(next(iter(rows.values())))
+		columns = ", ".join(f"`{field}`" for field in fields)
+		# nosemgrep: frappe-semgrep-rules.rules.security.frappe-sql-format-injection -- reviewed: the table is a DocType of the publication profile and the columns were checked against the table's own (stored_row); the names are a parameter
+		stored = frappe.db.sql(
+			f"select {columns} from `tab{doctype}` where name in %(names)s",
+			{"names": tuple(rows)},
+			as_dict=True,
+		)
+		found = {str(row["name"]): row for row in stored}
+		_add(tally["rows_compared"], doctype, len(rows))
+		for name, row in rows.items():
+			if name not in found:
+				_add(tally["rows_missing"], doctype)
+				continue
+			for field, value in row.items():
+				if _equal(found[name][field], value):
 					continue
-				for field, value in row.items():
-					if not _equal(found[name][field], value):
-						if doctype == "Activity" and field in ADDRESSES[0] and value in (None, ""):
-							# left empty by the publisher and filled from the activity's Place (derive); the
-							# integrity rules check it against the Place's address
-							completed += 1
-							continue
-						key = f"{doctype}.{field}"
-						differing[key] += 1
-						places.setdefault(key, [sequence, where[doctype, name]])
-	return {
-		"rows_compared": dict(compared),
-		"rows_missing": dict(missing),
-		"place_fields_completed": completed,
-		"fields_differing": dict(differing),
-		"first_place": places,
-	}
+				if doctype == "Activity" and field in ADDRESSES[0] and value in (None, ""):
+					# left empty by the publisher and filled from the activity's Place (derive); the
+					# integrity rules check it against the Place's address
+					tally["place_fields_completed"] += 1
+					continue
+				key = f"{doctype}.{field}"
+				_add(tally["fields_differing"], key)
+				tally["first_place"].setdefault(key, [sequence, where[doctype, name]])
+
+
+def _sample_batch(db, cache: dict, sequence: int, items: list, tally: dict, every: int) -> None:
+	"""One record in `every`, through the document route's own check of a stored record: the published fields, the
+	option sets and the context rule as the controllers apply them, the children, the picture's bytes."""
+	from ucm_migration_loader.publication_worker import reconcile_item
+
+	for position, item in enumerate(items, 1):
+		tally["records_seen"] += 1
+		if tally["records_seen"] % every:
+			continue
+		try:
+			reconcile_item(db, cache, item)
+		except Exception as exc:
+			exc.migration_location = (sequence, position, item["doctype"])
+			raise
+		tally["records_sampled"] += 1
 
 
 def stored_counts(context: str, manifest: dict) -> dict:
@@ -716,9 +831,9 @@ def stored_counts(context: str, manifest: dict) -> dict:
 	return out
 
 
-def _receipt_chain(db, run: str, applied: int) -> bool:
+def _receipt_chain(sealed: _Sealed, run: str, applied: int) -> bool:
 	"""Whether the committed receipts are the publication's batches, in order."""
-	published = db.execute(
+	published = sealed.db.execute(
 		"select sequence, sha from batches where sequence <= ? order by sequence", (applied,)
 	).fetchall()
 	committed = frappe.db.sql(
@@ -729,109 +844,221 @@ def _receipt_chain(db, run: str, applied: int) -> bool:
 	return [tuple(row) for row in published] == [tuple(row) for row in committed]
 
 
-def _sample(db, applied: int, every: int) -> int:
-	"""One record in `every`, through the document route's own check of a stored record: the published fields, the
-	option sets and the context rule as the controllers apply them, the children, the picture's bytes."""
-	from ucm_migration_loader.publication_worker import reconcile_item
-
-	cache, checked, seen = {}, 0, 0
-	for sequence, payload in db.execute(
-		"select sequence, payload from batches where sequence <= ? order by sequence", (applied,)
-	):
-		for position, item in enumerate(json.loads(payload), 1):
-			seen += 1
-			if seen % every:
-				continue
-			try:
-				reconcile_item(db, cache, item)
-			except Exception as exc:
-				exc.migration_location = (sequence, position, item["doctype"])
-				raise
-			checked += 1
-	return checked
+def _keep(run: str, sealed: _Sealed, ticket: int | None, cursor: int, progress: dict) -> bool:
+	"""Keep a verification's cursor and tally on the run. Whether the job still holds the run."""
+	_ctx, record = lock_run(run)
+	if not _mine(record, ticket):
+		frappe.db.rollback()
+		return False
+	sealed.unchanged()
+	_mark(run, "Verifying", state=APPLYING, reconcile_cursor=cursor, reconcile_counts=json.dumps(progress))
+	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the verification's cursor and tally, so that a pause is answered and the next job continues after this batch
+	frappe.db.commit()
+	return True
 
 
-def verify(run: str, sample_every: int = 50) -> dict:
-	"""Check a derived load and, when nothing is found, make the run ready for the go-live decision. The report
-	is kept on the run either way."""
+def _check(
+	run: str,
+	sealed: _Sealed,
+	last: int,
+	*,
+	ticket: int | None = None,
+	deadline: float | None = None,
+	sample_every: int = SAMPLE_EVERY,
+) -> None:
+	"""Compare the batches not yet compared with the stored rows, and sample their records. The tally and the
+	cursor are kept on the run every CHECKPOINT seconds, so a pause is answered soon and the next job continues
+	after the last batch kept. The run is not locked while its rows are read: its context is locked and hidden,
+	and the last step counts the rows again."""
+	_ctx, record = lock_run(run)
+	frappe.db.rollback()
+	if not _mine(record, ticket):
+		return
+	progress, cursor = _progress(record), record.reconcile_cursor or 0
+	tally = progress["compared"] = (progress.get("compared") if cursor else None) or _tally()
+	compared, sampled, kept = {}, {}, monotonic()
+	for sequence, _sha, payload in sealed.batches(cursor, last):
+		items = json.loads(payload)
+		started = monotonic()
+		_compare_batch(sealed.db, compared, sequence, items, tally)
+		between = monotonic()
+		_sample_batch(sealed.db, sampled, sequence, items, tally, sample_every)
+		now = monotonic()
+		tally["seconds"]["compare"] += between - started
+		tally["seconds"]["sample"] += now - between
+		out_of_time = deadline is not None and now > deadline
+		if out_of_time or sequence == last or now - kept >= CHECKPOINT:
+			if not _keep(run, sealed, ticket, sequence, progress) or out_of_time:
+				return
+			kept = monotonic()
+
+
+def _conclude(run: str, sealed: _Sealed, last: int, *, ticket: int | None = None) -> dict | None:
+	"""Count the delegation, check the integrity rules and the receipts, and keep the report on the run: ready
+	for the go-live decision when nothing was found, paused with the findings otherwise. Nothing, where the run
+	was taken."""
 	from ucm_migration_loader import publication_worker as documents
 	from ucm_migration_loader.publication_shares import check_share
 
-	api._operator()
-	seconds, started = {}, monotonic()
-	with _publication(run) as db:
-		manifest = _checked_manifest(db, run)
-		ctx, record = lock_run(run)
-		_same_target(manifest, ctx, record)
-		applied = record.applied or 0
-		if record.state != APPLYING or applied != _business_batches(db):
-			raise ValueError(_("Verify follows the last business batch of an applying run"))
-		check_closed(ctx, pilot=False)
-		documents.verify_sensitive_policy(manifest)
-		context = ctx.name
-		deferred = {doctype: manifest["counts"][doctype] for doctype in DEFERRED}
-		expected = {dt: (0 if dt in DEFERRED else count) for dt, count in manifest["counts"].items()}
+	ctx, record = lock_run(run)
+	frappe.db.rollback()
+	if not _mine(record, ticket):
+		return None
+	manifest, context, seconds = sealed.manifest, ctx.name, {}
+	_same_target(manifest, ctx, record)
 
-		def timed(step, call):
-			at = monotonic()
-			result = call()
-			seconds[step] = round(monotonic() - at, 2)
-			return result
+	def timed(step, call):
+		at = monotonic()
+		result = call()
+		seconds[step] = round(monotonic() - at, 2)
+		return result
 
-		counted = timed("count", lambda: stored_counts(context, manifest))
-		rows = timed("compare with the publication", lambda: compare(db, context, applied))
-		rules = timed("integrity rules", lambda: integrity(context, [dt for dt, n in counted.items() if n]))
-		sampled = timed("sampled document checks", lambda: _sample(db, applied, sample_every))
-		access = Counter()
-		for (payload,) in db.execute(
-			"select payload from batches where sequence > ? order by sequence", (applied,)
-		):
-			items = json.loads(payload)
-			if items[0]["doctype"] == "Record Share":
-				for item in items:
-					access[check_share(item["row"], context)] += 1
-		findings = {
-			"row counts": {dt: [counted[dt], expected[dt]] for dt in expected if counted[dt] != expected[dt]},
-			"rows missing": rows["rows_missing"],
-			"fields differing": rows["fields_differing"],
-			"rules broken": rules["broken"],
-			"receipts": [] if _receipt_chain(db, run, applied) else ["differ from the publication"],
-		}
-		findings = {kind: found for kind, found in findings.items() if found}
-		report = {
-			"route": ROUTE,
-			"context": context,
-			"published_rows": manifest["counts"],
-			"stored_rows": counted,
-			"rows_compared": rows["rows_compared"],
-			"place_fields_completed": rows["place_fields_completed"],
-			"rules_checked": rules["rules_checked"],
-			"sampled_document_checks": sampled,
-			"deferred_access_rows": deferred,
-			"batch_chain_sha256": manifest["batch_chain_sha256"],
-			"committed_business_batches": applied,
-			"deferred_batches": record.received - applied,
-			"share_review": dict(access),
-			"findings": findings,
-			"first_place": {key: rows["first_place"][key] for key in rows["fields_differing"]},
-			"seconds": seconds,
-		}
-		frappe.db.set_value(
-			api.RUN,
-			run,
-			{
-				"state": APPLYING if findings else READY,
-				"reconciliation_json": json.dumps(report),
-				"finding": _("Verification found: {0}").format(", ".join(findings)) if findings else None,
-			},
-		)
-		# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the verification report and the run's state, kept whether or not it passed
-		frappe.db.commit()
-	return {
-		**report,
-		"state": READY if not findings else APPLYING,
-		"total_seconds": round(monotonic() - started, 2),
+	counted = timed("count", lambda: stored_counts(context, manifest))
+	rules = timed("integrity rules", lambda: integrity(context, [dt for dt, n in counted.items() if n]))
+	access = Counter()
+	for _sequence, _sha, payload in sealed.batches(last):
+		items = json.loads(payload)
+		if items[0]["doctype"] == "Record Share":
+			for item in items:
+				access[check_share(item["row"], context)] += 1
+	ctx, record = lock_run(run)
+	if not _mine(record, ticket) or (record.applied or 0) != last or (record.reconcile_cursor or 0) != last:
+		frappe.db.rollback()
+		return None
+	check_closed(ctx, pilot=False)
+	documents.verify_sensitive_policy(manifest)
+	progress = _progress(record)
+	tally = progress.get("compared") or _tally()
+	seconds["compare with the publication"] = round(tally["seconds"]["compare"], 2)
+	seconds["sampled document checks"] = round(tally["seconds"]["sample"], 2)
+	deferred = {doctype: manifest["counts"][doctype] for doctype in DEFERRED}
+	expected = {dt: (0 if dt in DEFERRED else count) for dt, count in manifest["counts"].items()}
+	findings = {
+		"row counts": {dt: [counted[dt], expected[dt]] for dt in expected if counted[dt] != expected[dt]},
+		"rows missing": tally["rows_missing"],
+		"fields differing": tally["fields_differing"],
+		"rules broken": rules["broken"],
+		"receipts": [] if _receipt_chain(sealed, run, last) else ["differ from the publication"],
 	}
+	findings = {kind: found for kind, found in findings.items() if found}
+	report = {
+		"route": ROUTE,
+		"context": context,
+		"published_rows": manifest["counts"],
+		"stored_rows": counted,
+		"rows_compared": tally["rows_compared"],
+		"derived_rows_changed": progress.get("derived"),
+		"place_fields_completed": tally["place_fields_completed"],
+		"rules_checked": rules["rules_checked"],
+		"sampled_document_checks": tally["records_sampled"],
+		"deferred_access_rows": deferred,
+		"batch_chain_sha256": manifest["batch_chain_sha256"],
+		"committed_business_batches": last,
+		"deferred_batches": record.received - last,
+		"share_review": dict(access),
+		"findings": findings,
+		"first_place": {key: tally["first_place"][key] for key in tally["fields_differing"]},
+		"seconds": seconds,
+	}
+	sealed.unchanged()
+	if findings:
+		# the next request derives and verifies again, from the first batch
+		_mark(
+			run,
+			"Verification found differences",
+			state=PAUSED,
+			reconciliation_json=json.dumps(report),
+			finding=_("Verification found: {0}").format(", ".join(findings)),
+			reconcile_cursor=0,
+			reconcile_counts=json.dumps({"route": ROUTE}),
+		)
+	else:
+		_mark(run, "Ready for activation", state=READY, reconciliation_json=json.dumps(report), finding=None)
+	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the verification report and the run's state, kept whether or not it passed
+	frappe.db.commit()
+	return {**report, "state": PAUSED if findings else READY}
+
+
+def verify(run: str, sample_every: int = SAMPLE_EVERY) -> dict:
+	"""Check a derived load from its first batch on, in one call from the bench, and when nothing is found make
+	the run ready for the go-live decision. The report is kept on the run either way."""
+	api._operator()
+	started = monotonic()
+	with _publication(run) as sealed:
+		last = _business_batches(sealed.db)
+		_ctx, record = lock_run(run)
+		if record.state != APPLYING or (record.applied or 0) != last:
+			raise ValueError(_("Verify follows the last business batch of an applying run"))
+		frappe.db.set_value(api.RUN, run, "reconcile_cursor", 0)
+		# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the verification starts again from the first batch
+		frappe.db.commit()
+		_check(run, sealed, last, sample_every=sample_every)
+		report = _conclude(run, sealed, last)
+	if report is None:
+		raise ValueError(_("The run was paused or taken by another request"))
+	return {**report, "total_seconds": round(monotonic() - started, 2)}
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# the queue
+
+
+def _next_step(run: str, last: int, stop_at: int | None, ticket: int | None) -> str | None:
+	"""The step a load is at, read from the run: nothing where it is paused, taken, ready or at its limit."""
+	_ctx, record = lock_run(run)
+	frappe.db.rollback()
+	if not _mine(record, ticket):
+		return None
+	applied = record.applied or 0
+	if applied < last:
+		return "write" if stop_at is None or applied < stop_at else None
+	if "derived" not in _progress(record):
+		return "derive"
+	return "verify" if (record.reconcile_cursor or 0) < last else "conclude"
+
+
+def advance(
+	run: str,
+	*,
+	ticket: int | None = None,
+	stop_at: int | None = None,
+	budget: float | None = None,
+	sample_every: int = SAMPLE_EVERY,
+) -> dict:
+	"""Take a load on from where the last call left it: the batches not yet written, then the derived values,
+	then the verification. A queued job passes its ticket and a `budget` in seconds, takes one step and is
+	followed by another job while `more` is returned; without a budget the call runs to the end."""
+	api._operator()
+	deadline, steps, more = None if budget is None else monotonic() + budget, {}, False
+	with _publication(run) as sealed:
+		last = _business_batches(sealed.db)
+		while step := _next_step(run, last, stop_at, ticket):
+			if step == "write":
+				upto = last if stop_at is None else min(last, stop_at)
+				steps[step] = _write(run, sealed, upto, ticket=ticket, deadline=deadline)
+			elif step == "derive":
+				steps[step] = _derive_step(run, ticket=ticket)
+			elif step == "verify":
+				_check(run, sealed, last, ticket=ticket, deadline=deadline, sample_every=sample_every)
+			else:
+				steps[step] = _conclude(run, sealed, last, ticket=ticket)
+			if budget is not None:
+				more = _next_step(run, last, stop_at, ticket) is not None
+				break
+	return {**api._result(api._record(run)), "steps": steps, "more": more}
+
+
+def job(run: str, action: str, ticket: int, stop_at: int | None = None) -> bool:
+	"""One queued job of a run on this route. Whether another job should follow it."""
+	if action == "apply":
+		every = max(1, int(frappe.conf.get("ucm_migration_sample_every") or SAMPLE_EVERY))
+		return advance(run, ticket=ticket, stop_at=stop_at, budget=BUDGET, sample_every=every)["more"]
+	if action == "activate":
+		activate(run)
+		return False
+	if action == "discard":
+		return discard(run, ticket=ticket, budget=BUDGET)["state"] == CLEANING
+	raise ValueError(_("Unknown queued migration action"))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -849,9 +1076,9 @@ def activate(run: str, commit: bool = True) -> dict:
 
 	api._operator()
 	started = monotonic()
-	with _publication(run) as db:
+	with documents.current_reads(), _publication(run) as sealed:
 		try:
-			manifest = _checked_manifest(db, run)
+			manifest = sealed.manifest
 			held_shares.lock_activation()
 			ctx, record = lock_run(run)
 			_same_target(manifest, ctx, record)
@@ -862,14 +1089,12 @@ def activate(run: str, commit: bool = True) -> dict:
 			documents.verify_sensitive_policy(manifest)
 			applied = record.applied
 			if stored_counts(ctx.name, manifest) != report["stored_rows"] or not _receipt_chain(
-				db, run, applied
+				sealed, run, applied
 			):
 				raise ValueError(_("Stored rows or receipts changed since verification"))
 			cache, held, released = {}, 0, Counter(dict.fromkeys(DEFERRED, 0))
 			frappe.flags.ucm_publishing_context = ctx.name
-			for sequence, sha, payload in db.execute(
-				"select sequence, sha, payload from batches where sequence > ? order by sequence", (applied,)
-			):
+			for sequence, sha, payload in sealed.batches(applied):
 				items = json.loads(payload)
 				doctype = items[0]["doctype"]
 				for position, item in enumerate(items, 1):
@@ -883,12 +1108,12 @@ def activate(run: str, commit: bool = True) -> dict:
 							held_shares.hold(record, item["row"], sequence, position)
 							held += 1
 							continue
-						documents.release_item(db, cache, item, ctx.name)
+						documents.release_item(sealed.db, cache, item, ctx.name)
 						released[doctype] += 1
 					except Exception as exc:
 						exc.migration_location = (sequence, position, doctype)
 						raise
-				_receipts(record, [(sequence, sha, items)], doctype, DOCUMENT)
+				_receipts(record, [(sequence, sha, items, len(payload))], doctype, DOCUMENT)
 			ctx.context_status = "Active"
 			ctx.save()
 			accounted = released.copy()
@@ -900,9 +1125,8 @@ def activate(run: str, commit: bool = True) -> dict:
 				shares_held_at_activation=held,
 				released_access_rows=dict(released),
 			)
-			frappe.db.set_value(
-				api.RUN, run, {"applied": manifest["batches"], "reconciliation_json": json.dumps(report)}
-			)
+			sealed.unchanged()
+			_mark(run, "Activated", applied=manifest["batches"], reconciliation_json=json.dumps(report))
 			api.mark_activated(run)
 			result = {**api._result(api._record(run)), "seconds": round(monotonic() - started, 2)}
 			if commit:
@@ -922,19 +1146,23 @@ def activate(run: str, commit: bool = True) -> dict:
 # discard
 
 
-def delete_delegation(context: str, keep_files: bool = False) -> dict:
+def _delete(context: str, keep_files: bool = False, deadline: float | None = None) -> tuple[dict, bool]:
 	"""Remove every row of the publication profile that belongs to a hidden delegation, the tables that depend on
 	others first, by primary key, DELETE_ROWS at a time with a commit after each. Pictures no remaining File row
-	names are removed from the disk afterwards. Returns the rows removed per table."""
+	names are removed from the disk afterwards. Returns the rows removed per table, and whether none is left:
+	past the deadline the rest waits for the next call."""
 	from ucm.permissions import counts
 
-	removed, urls = Counter(), set()
+	removed, urls, finished = Counter(), set(), True
 	tables = []
 	for doctype in reversed(ORDER):
 		tables += [*CHILDREN.get(doctype, ()), *(("File",) if doctype == "Person" else ()), doctype]
 	for doctype in tables:
 		source, values = _scope(doctype, context)
-		while True:
+		while finished:
+			if deadline is not None and monotonic() > deadline:
+				finished = False
+				break
 			# nosemgrep: frappe-semgrep-rules.rules.security.frappe-sql-format-injection -- reviewed: the scope is built in code from the publication profile (_scope); the context and the limit are parameters
 			names = frappe.db.sql_list(
 				f"select r.name {source} limit %(limit)s", {**values, "limit": DELETE_ROWS}
@@ -952,7 +1180,8 @@ def delete_delegation(context: str, keep_files: bool = False) -> dict:
 			# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: a delete in chunks by design: no long transaction beside live delegations, and an interrupted delete is run again
 			frappe.db.commit()
 	if not keep_files and urls:
-		# one read of the File table for all of them: file_url has no index
+		# one read of the File table for all of them: file_url has no index. A picture other rows of the
+		# delegation still name stays until the call that removes the last of them
 		used = set(
 			frappe.db.sql_list("select distinct file_url from `tabFile` where file_url in %s", (tuple(urls),))
 		)
@@ -961,30 +1190,48 @@ def delete_delegation(context: str, keep_files: bool = False) -> dict:
 			path = (root / (url or "").removeprefix("/private/files/")).resolve()
 			if url and url.startswith("/private/files/") and path.parent == root:
 				path.unlink(missing_ok=True)
-	return dict(removed)
+	return dict(removed), finished
 
 
-def discard(run: str) -> dict:
-	"""Remove a hidden run's rows and keep its receipts. A replacement publication takes a new snapshot identity."""
+def delete_delegation(context: str, keep_files: bool = False) -> dict:
+	"""Remove a hidden delegation's rows, all of them. Returns the rows removed per table."""
+	return _delete(context, keep_files)[0]
+
+
+def discard(run: str, *, ticket: int | None = None, budget: float | None = None) -> dict:
+	"""Remove a hidden run's rows and keep its receipts. A replacement publication takes a new snapshot identity.
+	A queued job passes its ticket and a `budget` in seconds, and is followed by another job while the run stays
+	cleaning; without them the call marks the run itself and removes everything."""
 	api._operator()
 	started = monotonic()
 	ctx, record = lock_run(run)
-	if record.state not in HIDDEN:
-		raise ValueError(_("Only a hidden full publication can be discarded"))
+	if ticket is None:
+		if record.state not in HIDDEN:
+			raise ValueError(_("Only a hidden full publication can be discarded"))
+		frappe.db.set_value(
+			api.RUN, run, {"state": CLEANING, "dispatch_id": (record.dispatch_id or 0) + 1, "finding": None}
+		)
+	elif record.state != CLEANING or record.dispatch_id != ticket:
+		frappe.db.rollback()
+		return {"run": run, "state": record.state, "removed": {}}
 	check_closed(ctx, pilot=False)
-	frappe.db.set_value(
-		api.RUN, run, {"state": CLEANING, "dispatch_id": (record.dispatch_id or 0) + 1, "finding": None}
-	)
+	_mark(run, "Removing rows")
 	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the run is marked as cleaning before its rows go, so that no worker applies to it meanwhile
 	frappe.db.commit()
-	removed = delete_delegation(ctx.name)
+	removed, finished = _delete(ctx.name, deadline=None if budget is None else started + budget)
+	out = {"run": run, "removed": removed, "seconds": round(monotonic() - started, 2)}
+	if not finished:
+		return {**out, "state": CLEANING}
 	manifest = json.loads(record.manifest_json)
 	left = {dt: n for dt, n in stored_counts(ctx.name, manifest).items() if n}
 	if left:
 		raise ValueError(_("Rows remain after the delete: {0}").format(", ".join(sorted(left))))
-	ctx, record = lock_run(run)
-	frappe.db.set_value(api.RUN, run, {"state": "Discarded", "applied": 0})
+	_ctx, record = lock_run(run)
+	if record.state != CLEANING or (ticket is not None and record.dispatch_id != ticket):
+		frappe.db.rollback()
+		return {**out, "state": record.state}
+	_mark(run, "Discarded", state="Discarded", applied=0, reconcile_cursor=0)
 	remove_after_discard(record)
 	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the end of a discard run from the bench or a worker
 	frappe.db.commit()
-	return {"run": run, "state": "Discarded", "removed": removed, "seconds": round(monotonic() - started, 2)}
+	return {**out, "state": "Discarded", "seconds": round(monotonic() - started, 2)}

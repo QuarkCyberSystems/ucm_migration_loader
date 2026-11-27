@@ -5,7 +5,7 @@ import json
 import frappe
 from frappe.utils import now_datetime
 
-from . import api
+from . import api, write_routes
 from .application import check_closed, lock_run
 from .frozen import FORMAT
 
@@ -15,6 +15,12 @@ PAUSED = "Publication paused"
 READY = "Publication ready"
 CLEANING = "Publication cleaning"
 BATCHES_PER_JOB = 25
+
+
+def set_based(run):
+    """Whether the run's plan is the set-based route, whose steps the queue runs in place of the batches."""
+    plan = frappe.db.get_value(api.RUN, run, "write_plan_json")
+    return write_routes.set_based(json.loads(plan or "{}"))
 
 
 def is_publication(run):
@@ -67,9 +73,15 @@ def request(run, action, max_batches=None):
 
 
 def enqueue(run, action, ticket, max_batches, stop_at):
+    timeout = None
+    if set_based(run):
+        # a set-based step works on a whole delegation at once, and is given the time for it
+        from .ucm_migration_loader.set_based import JOB_TIMEOUT as timeout
+
     frappe.enqueue(
         "ucm_migration_loader.publication_jobs.execute",
         queue=api.QUEUE,
+        timeout=timeout,
         run=run,
         action=action,
         ticket=ticket,
@@ -77,6 +89,16 @@ def enqueue(run, action, ticket, max_batches, stop_at):
         stop_at=stop_at,
         enqueue_after_commit=True,
     )
+
+
+def continue_set_based(run, action, ticket, max_batches, stop_at):
+    """Take one step of a set-based run, and queue the next job while steps remain."""
+    from .ucm_migration_loader import set_based as route
+
+    if route.job(run, action, ticket, stop_at):
+        _, current = lock_run(run)
+        if current.dispatch_id == ticket:
+            enqueue(run, action, ticket, max_batches, stop_at)
 
 
 def execute(run, action, ticket, max_batches, stop_at=None):
@@ -90,6 +112,9 @@ def execute(run, action, ticket, max_batches, stop_at=None):
             lock_activation()
         _, record = lock_run(run)
         if record.dispatch_id != ticket:
+            return
+        if set_based(run):
+            continue_set_based(run, action, ticket, max_batches, stop_at)
             return
         if action == "activate":
             publication_worker.activate(run)

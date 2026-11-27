@@ -195,7 +195,7 @@ def stage(path: str, run: str):
                 os.fsync(fd)
             finally:
                 os.close(fd)
-        from .write_routes import DOCUMENT, parent_types
+        from .write_routes import default_plan
 
         with closing(
             sqlite3.connect(dest.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
@@ -208,9 +208,7 @@ def stage(path: str, run: str):
                 "context_id": context,
                 "snapshot_id": manifest["snapshot"],
                 "manifest_json": encoded(manifest).decode(),
-                "write_plan_json": json.dumps(
-                    dict.fromkeys(parent_types(manifest), DOCUMENT)
-                ),
+                "write_plan_json": json.dumps(default_plan(manifest)),
                 "state": "Publication staged",
                 "publication_stamp": stamp,
                 "received": manifest["batches"],

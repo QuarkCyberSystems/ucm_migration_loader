@@ -9,6 +9,9 @@ from .frozen import ORDER
 
 DOCUMENT = "Document API"
 SQL = "Validated bulk SQL"
+# Writes, derives and verifies a delegation in sets: a route for the whole run, never for some DocTypes of it.
+SET_BASED = "Set-based SQL"
+ROUTES = (DOCUMENT, SQL, SET_BASED)
 
 
 def parent_types(manifest):
@@ -25,6 +28,22 @@ def route_for(plan, dt):
     if route == DOCUMENT or (route == SQL and sql_allowed(dt)):
         return route
     raise ValueError(f"Write route is unavailable for {dt}")
+
+
+def set_based(plan):
+    """Whether a run's plan is the set-based route. A plan that mixes it with another route is refused."""
+    chosen = [route == SET_BASED for route in plan.values()]
+    if any(chosen) and not all(chosen):
+        raise ValueError("The set-based route applies to every DocType of a run")
+    return any(chosen)
+
+
+def default_plan(manifest):
+    """The plan a staged run starts with: the site's `ucm_migration_route`, or the document route."""
+    route = frappe.conf.get("ucm_migration_route") or DOCUMENT
+    if route not in ROUTES:
+        raise ValueError("Site setting ucm_migration_route names an unknown write route")
+    return dict.fromkeys(parent_types(manifest), route)
 
 
 def editable(record):
@@ -64,7 +83,18 @@ def configure(run: str, routes: dict | str):
         parent_types(json.loads(record.manifest_json))
     ):
         raise ValueError("Choose a write route for every published parent DocType")
-    for dt in routes:
-        route_for(routes, dt)
+    if not set_based(routes):
+        for dt in routes:
+            route_for(routes, dt)
     record.write_plan_json = json.dumps(routes, sort_keys=True)
     record.save(ignore_permissions=True)
+
+
+@frappe.whitelist(methods=["POST"])
+def select(run: str, route: str):
+    """Choose one route for every published DocType of a staged run."""
+    if route not in ROUTES:
+        raise ValueError("Unknown write route")
+    record = api._record(run)
+    configure(run, dict.fromkeys(parent_types(json.loads(record.manifest_json)), route))
+    return {"run": run, "route": route}

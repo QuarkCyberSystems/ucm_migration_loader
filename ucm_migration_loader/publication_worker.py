@@ -3,6 +3,7 @@
 import hashlib
 import json
 from collections import Counter
+from contextlib import contextmanager
 from decimal import Decimal
 from time import monotonic
 
@@ -329,6 +330,7 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None):
     if int(max_batches) < 1:
         raise ValueError("Select a positive batch limit")
     _, initial = lock_run(run)
+    refuse_set_based(initial)
     with indexed_publication(run, initial) as (db, hashes, manifest, path, stamp):
         if release_differences(manifest):
             raise ValueError(
@@ -744,8 +746,15 @@ def reconcile_business(db, ctx, record, manifest, *, checkpoint=False):
     return True
 
 
-def activate(run: str):
-    api._operator()
+def refuse_set_based(record):
+    """The set-based route has its own steps: a run that chose it is not written through this worker."""
+    if write_routes.set_based(json.loads(record.write_plan_json or "{}")):
+        raise ValueError("This run uses the set-based route")
+
+
+@contextmanager
+def current_reads():
+    """Release checks of an activation, on either route, read the rows as they are now."""
     # MariaDB snapshot isolation rejects a locking read if a caseworker saved the
     # record since our reconciliation snapshot. Use InnoDB current locking reads
     # for release checks, retaining repeatable-read gap locks for absent consent.
@@ -754,15 +763,22 @@ def activate(run: str):
     if restore:
         frappe.db.sql("set session innodb_snapshot_isolation=OFF")
     try:
-        return _activate(run)
+        yield
     finally:
         if restore:
             frappe.db.sql("set session innodb_snapshot_isolation=ON")
 
 
+def activate(run: str):
+    api._operator()
+    with current_reads():
+        return _activate(run)
+
+
 def _activate(run):
     held_shares.lock_activation()
     ctx, record = lock_run(run)
+    refuse_set_based(record)
     with indexed_publication(run, record) as (db, hashes, manifest, path, stamp):
         try:
             if release_differences(manifest):

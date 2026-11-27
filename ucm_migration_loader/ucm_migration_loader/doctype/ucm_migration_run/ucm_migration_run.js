@@ -3,6 +3,7 @@ frappe.ui.form.on("UCM Migration Run", {
 		if (frm.is_new()) return;
 		const state = frm.doc.state;
 		show_batch_progress(frm);
+		show_write_route(frm);
 		frm.add_custom_button(__("View batches"), () =>
 			frappe.set_route("List", "UCM Migration Batch", { migration_run: frm.doc.name })
 		);
@@ -90,6 +91,7 @@ function show_batch_progress(frm) {
 		message = __("{0} of {1} batches currently applied", counts);
 	}
 	if (frm.doc.worker_phase && frm.doc.worker_seen) {
+        // a phase that names a DocType ("Writing Person") is stored whole and shown as stored
         message += " · " + __("{0} · {1} batches reconciled · Last checkpoint {2}", [
             __(frm.doc.worker_phase), Number(frm.doc.reconcile_cursor || 0), frm.doc.worker_seen
         ]);
@@ -97,26 +99,65 @@ function show_batch_progress(frm) {
     frm.dashboard.show_progress(__("Batch progress"), Math.floor(100 * applied / total), message);
 }
 
+const SET_BASED = "Set-based SQL";
+
+// The route of a run: the set-based route for all of it, or a route per DocType.
+function write_route(frm) {
+	let plan;
+	try {
+		plan = JSON.parse(frm.doc.write_plan_json || "{}");
+	} catch {
+		return null;
+	}
+	const routes = [...new Set(Object.values(plan))];
+	if (!routes.length) return null;
+	return routes.length === 1 ? routes[0] : "by DocType";
+}
+
+function show_write_route(frm) {
+	const route = write_route(frm);
+	if (!route || !frm.doc.state.startsWith("Publication")) return;
+	const label = route === "by DocType" ? __("chosen per DocType") : __(route);
+	frm.dashboard.set_headline(__("Write route: {0}", [label]));
+}
+
 async function configure_write_routes(frm) {
     const method = "ucm_migration_loader.write_routes.";
     const args = {run: frm.doc.name};
     const {message: rows} = await frappe.call({method: method + "options", args});
+    const per_doctype = "By DocType";
+    const whole = rows.length && rows.every(row => row.selected === SET_BASED);
     const dialog = new frappe.ui.Dialog({
         title: __("Configure write routes"),
-        fields: rows.map((row, i) => ({
+        fields: [{
+            fieldname: "whole",
+            label: __("Route for the delegation"),
+            fieldtype: "Select",
+            options: [
+                {value: per_doctype, label: __("Chosen per DocType")},
+                {value: SET_BASED, label: __("Set-based SQL")},
+            ],
+            default: whole ? SET_BASED : per_doctype,
+            description: __("Set-based SQL writes every DocType in sets, then derives and verifies the whole delegation before it can be activated."),
+        }, ...rows.map((row, i) => ({
             fieldname: "route_" + i,
             label: row.doctype,
             fieldtype: "Select",
             options: row.sql_allowed ? ["Document API", "Validated bulk SQL"] : ["Document API"],
-            default: row.sql_allowed ? row.selected : "Document API",
+            default: row.sql_allowed && !whole ? row.selected : "Document API",
             read_only: !row.sql_allowed,
+            depends_on: `eval:doc.whole !== "${SET_BASED}"`,
             description: row.sql_allowed ? undefined : __("Bulk SQL is unavailable for this DocType on this site."),
-        })),
+        }))],
         primary_action_label: __("Save routes"),
         async primary_action(values) {
-            const routes = Object.fromEntries(rows.map((row, i) =>
-                [row.doctype, row.sql_allowed ? values["route_" + i] : "Document API"]));
-            await frappe.call({method: method + "configure", args: {...args, routes}, freeze: true});
+            if (values.whole === SET_BASED) {
+                await frappe.call({method: method + "select", args: {...args, route: SET_BASED}, freeze: true});
+            } else {
+                const routes = Object.fromEntries(rows.map((row, i) =>
+                    [row.doctype, row.sql_allowed ? values["route_" + i] : "Document API"]));
+                await frappe.call({method: method + "configure", args: {...args, routes}, freeze: true});
+            }
             dialog.hide();
             await frm.reload_doc();
         },

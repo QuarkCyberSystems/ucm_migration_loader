@@ -253,14 +253,13 @@ def reconcile(run: str) -> dict:
 	"""The document route's own reconciliation of every stored record, over rows the set-based route wrote."""
 	from ucm_migration_loader.application import lock_run
 	from ucm_migration_loader.publication_worker import reconcile_business
-	from ucm_migration_loader.ucm_migration_loader.set_based import _checked_manifest, _publication
+	from ucm_migration_loader.ucm_migration_loader.set_based import _publication
 
 	started = time.monotonic()
-	with _publication(run) as db:
-		manifest = _checked_manifest(db, run)
+	with _publication(run) as sealed:
 		ctx, record = lock_run(run)
 		try:
-			reconcile_business(db, ctx, record, manifest)
+			reconcile_business(sealed.db, ctx, record, sealed.manifest)
 			report = json.loads(record.reconciliation_json)
 		finally:
 			frappe.db.rollback()
