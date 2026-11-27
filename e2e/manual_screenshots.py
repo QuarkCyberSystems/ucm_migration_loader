@@ -28,9 +28,9 @@ PLAIN = """
 
 
 @contextmanager
-def desk(site: str):
+def desk(site: str, user: str = "Administrator"):
 	"""A page of the site's Desk, signed in."""
-	sid, port = session(site)
+	sid, port = session(site, user)
 	try:
 		with sync_playwright() as playwright:
 			browser = playwright.chromium.launch(args=[f"--host-resolver-rules=MAP {site} 127.0.0.1"])

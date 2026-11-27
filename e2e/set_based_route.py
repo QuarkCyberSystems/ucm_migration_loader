@@ -23,7 +23,7 @@ SHOTS = pathlib.Path(__file__).resolve().parent / "screenshots"
 MENU = "Migration"
 
 
-def session(site: str) -> tuple[str, int]:
+def session(site: str, user: str = "Administrator") -> tuple[str, int]:
 	from frappe.auth import CookieManager, LoginManager
 
 	os.chdir(BENCH / "sites")
@@ -32,7 +32,7 @@ def session(site: str) -> tuple[str, int]:
 	frappe.utils.set_request(path="/")
 	frappe.local.cookie_manager = CookieManager()
 	frappe.local.login_manager = LoginManager()
-	frappe.local.login_manager.login_as("Administrator")
+	frappe.local.login_manager.login_as(user)
 	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the web server is another process, and sees only what is committed
 	frappe.db.commit()
 	return frappe.session.sid, int(frappe.conf.webserver_port or 8000)

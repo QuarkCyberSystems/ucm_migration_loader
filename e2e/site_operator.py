@@ -5,14 +5,17 @@ waits for the file.
 		--proposed <run> --code <check code> [--shots]
 	env/bin/python apps/ucm_migration_loader/e2e/site_operator.py --site <site> \
 		--handoff <handoff.json> --publisher <account> [--shots]
+	env/bin/python apps/ucm_migration_loader/e2e/site_operator.py --site <site> --reader <run> --as <account>
 
 Run from the bench, on a development site that is being served. The first form approves a hand-off its publishing
 account proposed with `ucm-push propose`, by the check code that command gave; a wrong code is tried first and
 must be refused. The second approves a hand-off from its file, for an account named in the dialog. The approval
 is real: the run is left waiting for its file, and is staged by the site's worker when the file has arrived
 (`tests/operator_flow.py --desk` sends it). With `--shots`
-the dialog and the waiting run are saved as pictures of the user manual. A session is opened for the
-Administrator, as `bench browse` does, and closed at the end. Needs Playwright and Chromium. Synthetic data only.
+the dialog and the waiting run are saved as pictures of the user manual. The third form opens a run as an account
+that reads runs without the Migration Admin role, a System Manager for instance, and checks that the form offers
+it no action. A session is opened for the Administrator, or for the account named, as `bench browse` does, and
+closed at the end. Needs Playwright and Chromium. Synthetic data only.
 """
 
 import argparse
@@ -96,6 +99,24 @@ def approve_proposed(page, run: str, code: str, shots: bool) -> str:
 	return run
 
 
+def reads_only(page, run: str) -> str:
+	"""Who reads a run without the Migration Admin role sees it whole, and is offered no action on it."""
+	page.goto(f"/desk/ucm-migration-run/{run}", wait_until="networkidle")
+	overview = page.locator('.frappe-control[data-fieldname="overview"]').locator("visible=true")
+	expect(overview.get_by_text("Steps", exact=True)).to_be_visible()
+	actions = page.locator(".page-actions")
+	expect(actions.get_by_text("View batches", exact=True).first).to_be_visible()
+	expect(page.locator(".page-actions button.btn-primary:visible")).to_have_count(0)
+	menu = page.locator(".inner-group-button", has_text="Migration").locator("visible=true").first
+	menu.click()
+	offered = sorted(text.strip() for text in menu.locator(".dropdown-item").all_inner_texts())
+	if offered != ["Refresh progress"]:
+		raise SystemExit(f"A reader is offered: {offered}")
+	page.goto("/desk/ucm-migration-run", wait_until="networkidle")
+	expect(page.locator(".page-actions button", has_text="Approve a hand-off")).to_have_count(0)
+	return run
+
+
 def main() -> None:
 	parser = argparse.ArgumentParser(
 		description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -105,23 +126,31 @@ def main() -> None:
 	parser.add_argument("--code", help="The check code the publishing operator gave, with --proposed")
 	parser.add_argument("--handoff", type=pathlib.Path, help="Approve the hand-off in this file")
 	parser.add_argument("--publisher", help="The publishing account, with --handoff")
+	parser.add_argument("--reader", metavar="RUN", help="Check that this run offers a reader no action")
+	parser.add_argument("--as", dest="account", help="The account that reads, with --reader")
 	parser.add_argument(
 		"--shots", action="store_true", help="Save the dialog and the waiting run as pictures"
 	)
 	args = parser.parse_args()
-	if bool(args.proposed and args.code) == bool(args.handoff and args.publisher):
-		parser.error("Give --proposed with --code, or --handoff with --publisher")
+	ways = (args.proposed and args.code, args.handoff and args.publisher, args.reader and args.account)
+	if sum(bool(way) for way in ways) != 1:
+		parser.error("Give --proposed with --code, --handoff with --publisher, or --reader with --as")
 	handoff = args.handoff.resolve() if args.handoff else None
 	errors = []
-	with desk(args.site) as page:
+	with desk(args.site, args.account or "Administrator") as page:
 		page.on("pageerror", lambda error: errors.append(str(error)))
-		if args.proposed:
+		if args.reader:
+			run = reads_only(page, args.reader)
+		elif args.proposed:
 			run = approve_proposed(page, args.proposed, args.code, args.shots)
 		else:
 			run = approve(page, handoff, args.publisher, args.shots)
 	if errors:
 		raise SystemExit(f"The page raised errors: {errors[:3]}")
-	print(f"Approved in the Desk: run {run} waits for its file")
+	if args.reader:
+		print(f"Read in the Desk as {args.account}: run {run} offers no action")
+	else:
+		print(f"Approved in the Desk: run {run} waits for its file")
 
 
 if __name__ == "__main__":
