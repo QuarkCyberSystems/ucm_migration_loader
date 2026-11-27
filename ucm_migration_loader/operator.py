@@ -4,18 +4,20 @@ Admin, and staged when its file has arrived."""
 import json
 from pathlib import Path
 
-from . import api
+import frappe
+from frappe import _
+
+from . import constants, runs
+from .contract import check_code, digest, encoded
+from .frozen import FORMAT, ORDER, selection
+from .publication_transport import approve as bind
+from .publication_transport import folder, progress, receive
+from .ucm_migration_loader import run_overview
 
 
 def _reviewed(handoff: dict) -> tuple[str, dict, str, int, dict]:
 	"""The parts of a hand-off: the run, the publication's manifest, the file's fingerprint and size, and what the
 	publishing side says of the delegation. A hand-off that is not whole, or not for this site, is refused."""
-	import frappe
-	from frappe import _
-
-	from .contract import digest
-	from .frozen import FORMAT
-
 	manifest = dict(handoff)
 	about = manifest.pop("delegation", None) or {}
 	run, verified = manifest.pop("run", None), manifest.pop("verified", None)
@@ -35,11 +37,6 @@ def _reviewed(handoff: dict) -> tuple[str, dict, str, int, dict]:
 def context_state(context: str, run: str | None = None) -> dict:
 	"""Whether a delegation's context can receive a publication: it exists, is locked and hidden, holds no record
 	of the publication's tables, and no other run holds it."""
-	import frappe
-	from frappe import _
-
-	from .frozen import ORDER, selection
-
 	found = frappe.db.get_value(
 		"Context",
 		context,
@@ -50,11 +47,11 @@ def context_state(context: str, run: str | None = None) -> dict:
 		return {"exists": False, "problem": None}
 	out = {"exists": True, "code": found.context_code, "name": found.context_name, "problem": None}
 	other = frappe.db.get_value(
-		api.RUN,
+		constants.RUN,
 		{
 			"context_id": context,
 			# a proposal holds nothing: several may wait for one delegation, and one is approved
-			"state": ["not in", ("Discarded", "Rejected", api.PROPOSED)],
+			"state": ["not in", (constants.DISCARDED, constants.REJECTED, constants.PROPOSED)],
 			"name": ["!=", run or ""],
 		},
 		"display_id",
@@ -77,11 +74,9 @@ def context_state(context: str, run: str | None = None) -> dict:
 
 def inspect_handoff(handoff: dict) -> dict:
 	"""What a hand-off says, for the person who is about to approve it: nothing is changed."""
-	import frappe
-
-	api._operator()
+	runs.only_admin()
 	run, manifest, sha, size, about = _reviewed(handoff)
-	known = frappe.db.get_value(api.RUN, run, ["display_id", "state"], as_dict=True)
+	known = frappe.db.get_value(constants.RUN, run, ["display_id", "state"], as_dict=True)
 	return {
 		"run": run,
 		"snapshot": manifest["snapshot"],
@@ -99,9 +94,6 @@ def inspect_handoff(handoff: dict) -> dict:
 def _prepare_context(context: str, run: str, code: str | None, name: str | None) -> bool:
 	"""Make the delegation's context where the site has none: under the published identifier, locked and
 	hidden, as a publication needs it. Whether it was made."""
-	import frappe
-	from frappe import _
-
 	state = context_state(context, run)
 	if state["problem"]:
 		frappe.throw(state["problem"])
@@ -127,11 +119,8 @@ def _prepare_context(context: str, run: str, code: str | None, name: str | None)
 def _open_to_approval(run: str) -> str | None:
 	"""The state of the run this publication has on the site, where it may still be approved: none yet,
 	proposed, or approved before."""
-	import frappe
-	from frappe import _
-
-	state = frappe.db.get_value(api.RUN, run, "state", for_update=True)
-	if state and state not in (api.AWAITING, api.PROPOSED):
+	state = frappe.db.get_value(constants.RUN, run, "state", for_update=True)
+	if state and state not in (constants.AWAITING, constants.PROPOSED):
 		frappe.throw(_("This publication is already on the site, as a run that is {0}").format(_(state)))
 	return state
 
@@ -139,12 +128,6 @@ def _open_to_approval(run: str) -> str | None:
 def _await(run: str, manifest: dict, approval: dict) -> str:
 	"""Keep the approved publication as a run that waits for its file, so that it shows in the Desk from the
 	approval on. Returns the run's short ID."""
-	import frappe
-	from frappe import _
-
-	from .contract import encoded
-	from .ucm_migration_loader import run_overview
-
 	facts = json.dumps(
 		{
 			"by": frappe.session.user,
@@ -156,13 +139,13 @@ def _await(run: str, manifest: dict, approval: dict) -> str:
 	)
 	state = _open_to_approval(run)
 	if state:
-		proposal = json.loads(frappe.db.get_value(api.RUN, run, "approval_json") or "{}")
+		proposal = json.loads(frappe.db.get_value(constants.RUN, run, "approval_json") or "{}")
 		kept = {key: proposal[key] for key in ("proposed_by", "proposed_on", "delegation") if key in proposal}
 		frappe.db.set_value(
-			api.RUN,
+			constants.RUN,
 			run,
 			{
-				"state": api.AWAITING,
+				"state": constants.AWAITING,
 				"approval_json": json.dumps({**kept, **json.loads(facts)}),
 				"publishing_user": approval["publisher"],
 			},
@@ -170,12 +153,12 @@ def _await(run: str, manifest: dict, approval: dict) -> str:
 	else:
 		record = frappe.get_doc(
 			{
-				"doctype": api.RUN,
+				"doctype": constants.RUN,
 				"context_id": manifest["context"],
 				"snapshot_id": manifest["snapshot"],
 				"publishing_user": approval["publisher"],
 				"manifest_json": encoded(manifest).decode(),
-				"state": api.AWAITING,
+				"state": constants.AWAITING,
 				"received": manifest["batches"],
 				"applied": 0,
 				"document_count": sum(manifest["counts"].values()),
@@ -185,7 +168,7 @@ def _await(run: str, manifest: dict, approval: dict) -> str:
 		# only the loader's own methods write a run; the Desk reads it
 		record.insert(set_name=run, ignore_permissions=True)
 	run_overview.refresh(run)
-	return frappe.db.get_value(api.RUN, run, "display_id")
+	return frappe.db.get_value(constants.RUN, run, "display_id")
 
 
 def approve(
@@ -193,16 +176,11 @@ def approve(
 ) -> dict:
 	"""Approve a reviewed hand-off for the account that will send its file. The delegation's context is made
 	where the site has none, and the publication becomes a run that waits for its file."""
-	import frappe
-	from frappe import _
-
-	from .publication_transport import approve as bind
-
-	api._operator()
+	runs.only_admin()
 	run, manifest, sha, size, about = _reviewed(handoff)
 	if publishing_user == frappe.session.user:
 		frappe.throw(_("The account that sends the file cannot be the one that approves it"))
-	if publishing_user and api.ROLE in frappe.get_roles(publishing_user):
+	if publishing_user and constants.ROLE in frappe.get_roles(publishing_user):
 		frappe.throw(_("A Migration Admin cannot be the publishing account"))
 	# before anything is written: an approval's file opens the site to the upload
 	_open_to_approval(run)
@@ -224,27 +202,21 @@ def approve(
 def propose(handoff: dict) -> dict:
 	"""Keep the hand-off a publishing account proposes as a run that waits for approval. Nothing of the site is
 	prepared and no file is accepted for it: that is the approval's."""
-	import frappe
-	from frappe import _
-
-	from .contract import encoded
-	from .ucm_migration_loader import run_overview
-
-	frappe.only_for(api.PUBLISHER)
+	frappe.only_for(constants.PUBLISHER)
 	run, manifest, sha, size, about = _reviewed(handoff)
-	known = frappe.db.get_value(api.RUN, run, ["state", "publishing_user", "display_id"], as_dict=True)
+	known = frappe.db.get_value(constants.RUN, run, ["state", "publishing_user", "display_id"], as_dict=True)
 	if known:
 		if known.publishing_user != frappe.session.user:
 			frappe.throw(_("This publication is another account's"), frappe.PermissionError)
 		return {"run": run, "display_id": known.display_id, "state": known.state}
 	record = frappe.get_doc(
 		{
-			"doctype": api.RUN,
+			"doctype": constants.RUN,
 			"context_id": manifest["context"],
 			"snapshot_id": manifest["snapshot"],
 			"publishing_user": frappe.session.user,
 			"manifest_json": encoded(manifest).decode(),
-			"state": api.PROPOSED,
+			"state": constants.PROPOSED,
 			"received": manifest["batches"],
 			"applied": 0,
 			"document_count": sum(manifest["counts"].values()),
@@ -262,16 +234,13 @@ def propose(handoff: dict) -> dict:
 	# only the loader's own methods write a run; the publishing account holds no right on the DocType
 	record.insert(set_name=run, ignore_permissions=True)
 	run_overview.refresh(run)
-	return {"run": run, "display_id": record.display_id, "state": api.PROPOSED}
+	return {"run": run, "display_id": record.display_id, "state": constants.PROPOSED}
 
 
 def _proposed(run: str) -> tuple:
 	"""A proposed run, with its manifest and what was proposed."""
-	import frappe
-	from frappe import _
-
-	record = frappe.get_doc(api.RUN, run)
-	if record.state != api.PROPOSED:
+	record = frappe.get_doc(constants.RUN, run)
+	if record.state != constants.PROPOSED:
 		frappe.throw(_("This run is not a proposal waiting for approval"))
 	return record, json.loads(record.manifest_json), json.loads(record.approval_json or "{}")
 
@@ -279,7 +248,7 @@ def _proposed(run: str) -> tuple:
 def inspect_proposed(run: str) -> dict:
 	"""What a proposed hand-off says, for the Migration Admin who is about to approve it. The file's
 	fingerprint is not among it: the approver has its short form from the publishing operator, and types it."""
-	api._operator()
+	runs.only_admin()
 	record, manifest, proposal = _proposed(run)
 	return {
 		"run": run,
@@ -302,12 +271,7 @@ def approve_proposed(
 	"""Approve a proposed hand-off. The approver proves they heard from the publishing operator themselves:
 	they give the check code the operator's command printed, which is the short form of the file's
 	fingerprint. A proposal made with the publishing account by someone else carries another code."""
-	import frappe
-	from frappe import _
-
-	from .contract import check_code
-
-	api._operator()
+	runs.only_admin()
 	record, manifest, proposal = _proposed(run)
 	given = "".join(character for character in (code or "").upper() if character.isalnum())
 	if given != check_code(proposal["sha256"]).replace("-", ""):
@@ -348,11 +312,7 @@ def approve_handoff(handoff_path: str, publishing_user: str) -> dict:
 def stage_arrived(handoff_or_run: str) -> dict:
 	"""Stage the file of an approved run once it has arrived, and say how it went: staged, refused by the
 	site's checks (the refused run is kept), not arrived completely, or never approved here."""
-	import frappe
-
-	from .publication_transport import folder, progress, receive
-
-	api._operator()
+	runs.only_admin()
 	run = run_of(handoff_or_run)
 	approval = folder(run) / "approval.json"
 	if not approval.is_file():
@@ -364,11 +324,13 @@ def stage_arrived(handoff_or_run: str) -> dict:
 		result = receive(run)
 	except ValueError as refused:
 		frappe.db.rollback()
-		kept = frappe.db.get_value(api.RUN, run, ["display_id", "state", "finding"], as_dict=True)
-		if not kept or kept.state != "Rejected" or "preflight failed" not in str(refused):
+		kept = frappe.db.get_value(constants.RUN, run, ["display_id", "state", "finding"], as_dict=True)
+		if not kept or kept.state != constants.REJECTED or "preflight failed" not in str(refused):
 			raise
 		return {"outcome": "refused", "run": run, "display_id": kept.display_id, "finding": kept.finding}
-	record = frappe.db.get_value(api.RUN, run, ["display_id", "document_count", "received"], as_dict=True)
+	record = frappe.db.get_value(
+		constants.RUN, run, ["display_id", "document_count", "received"], as_dict=True
+	)
 	return {
 		"outcome": "staged",
 		"run": run,

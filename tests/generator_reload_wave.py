@@ -14,7 +14,7 @@ from generator_snapshot import BENCH, site_snapshot
 from generator_transfer import deliver
 from rehearsal_bench import call, caseworker_session, worker
 
-from ucm_migration_loader import api
+from ucm_migration_loader import constants
 from ucm_migration_loader.frozen import freeze, verify_publication
 from ucm_migration_loader.held_shares import HELD
 from ucm_migration_loader.publication_receiver import local_publication
@@ -27,7 +27,7 @@ def operator_session(work):
 	operator = make_user(f"release-{uuid4().hex}@example.invalid", [])
 	account = frappe.get_doc("User", operator)
 	try:
-		account.add_roles(api.ROLE)
+		account.add_roles(constants.ROLE)
 		frappe.db.commit()
 		with caseworker_session(operator, work) as request:
 
@@ -38,7 +38,7 @@ def operator_session(work):
 	finally:
 		frappe.db.rollback()
 		account = frappe.get_doc("User", operator)
-		account.remove_roles(api.ROLE)
+		account.remove_roles(constants.ROLE)
 		account.enabled = 0
 		account.save()
 		frappe.db.commit()

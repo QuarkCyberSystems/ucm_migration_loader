@@ -13,7 +13,7 @@ from pathlib import Path
 import frappe
 from frappe import _
 
-from . import api
+from . import constants, runs
 from .contract import TRANSFER_CHUNK as CHUNK
 from .publication_receiver import inbox as folder
 from .publication_receiver import stage
@@ -23,7 +23,7 @@ STAGED = "staged"
 
 
 def approve(run: str, publisher: str, sha256: str, size: int):
-	api._operator()
+	runs.only_admin()
 	if not re.fullmatch(r"[a-f0-9]{64}", sha256) or int(size) < 1:
 		frappe.throw(_("Invalid approved publication fingerprint"))
 	if publisher in ("Guest", "Administrator") or not frappe.db.get_value("User", publisher, "enabled"):
@@ -134,11 +134,11 @@ def upload(run: str, offset: int, data: str):
 def _stage_when_committed(run: str) -> None:
 	"""The whole file is here: have the migration queue stage it. The approval was the decision; staging checks
 	the file against it and writes nothing into UCM."""
-	if frappe.db.get_value(api.RUN, run, "state") != api.AWAITING:
+	if frappe.db.get_value(constants.RUN, run, "state") != constants.AWAITING:
 		return  # approved from the bench without a run, or staged already: `receive` stages it by hand
 	frappe.enqueue(
 		"ucm_migration_loader.publication_transport.stage_arrived",
-		queue=api.QUEUE,
+		queue=constants.QUEUE,
 		timeout=3600,
 		job_id=f"ucm_migration_stage::{run}",
 		deduplicate=True,
@@ -151,9 +151,9 @@ def stage_arrived(run: str) -> None:
 	"""Queued job: stage the file of a run that waits for it, in the name of the Migration Admin who approved
 	it. A file the site's checks refuse is kept as a refused run; any other failure is noted on the run, which
 	keeps waiting until someone stages it from the Desk."""
-	record = frappe.db.get_value(api.RUN, run, ["state", "approval_json"], as_dict=True)
+	record = frappe.db.get_value(constants.RUN, run, ["state", "approval_json"], as_dict=True)
 	approver = json.loads((record and record.approval_json) or "{}").get("by")
-	if not record or record.state != api.AWAITING or not approver:
+	if not record or record.state != constants.AWAITING or not approver:
 		return
 	# nosemgrep: frappe-semgrep-rules.rules.security.frappe-setuser -- reviewed: the job is queued by the sender's last piece and must not run with the sender's rights or with more than the approver's; receive() checks the role again and compares the file with the approved fingerprint
 	frappe.set_user(approver)
@@ -161,11 +161,11 @@ def stage_arrived(run: str) -> None:
 		receive(run)
 	except Exception as failed:
 		frappe.db.rollback()
-		if frappe.db.get_value(api.RUN, run, "state") == "Rejected":
+		if frappe.db.get_value(constants.RUN, run, "state") == constants.REJECTED:
 			return  # refused by the site's checks: the run says what differs
 		# the loader's own refusals are sentences without data; another error gives its kind only
 		reason = str(failed) if isinstance(failed, ValueError) else type(failed).__name__
-		frappe.db.set_value(api.RUN, run, "finding", f"Staging failed: {reason}"[:140])
+		frappe.db.set_value(constants.RUN, run, "finding", f"Staging failed: {reason}"[:140])
 		# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the failure is kept on the run although the job fails
 		frappe.db.commit()
 		raise
@@ -182,10 +182,10 @@ def clear_pieces(run: str) -> None:
 
 
 def receive(run: str):
-	api._operator()
+	runs.only_admin()
 	root = folder(run)
 	if (root / STAGED).is_file():
-		return api._result(api._record(run))
+		return runs.result(runs.record(run))
 	approval = json.loads((root / "approval.json").read_bytes())
 	if progress(root, approval)["offset"] != approval["size"]:
 		raise ValueError("Publication transfer is incomplete")
@@ -201,8 +201,10 @@ def receive(run: str):
 			raise ValueError("Transfer differs from the approved file")
 		result = stage(str(path), run)
 		# the account that sent the file may read the status, the report and the metrics of this
-		# run, and of no other (api._publisher_or_operator)
-		frappe.db.set_value(api.RUN, run, "publishing_user", approval["publisher"], update_modified=False)
+		# run, and of no other (runs.sender_or_admin)
+		frappe.db.set_value(
+			constants.RUN, run, "publishing_user", approval["publisher"], update_modified=False
+		)
 		# once the staging is committed; a staging that is rolled back keeps its pieces to stage again
 		frappe.db.after_commit.add(lambda: clear_pieces(run))
 		return result

@@ -11,7 +11,7 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from ucm_migration_loader import api, operator, publication_transport
+from ucm_migration_loader import api, constants, operator, publication_transport
 from ucm_migration_loader.commands import said
 from ucm_migration_loader.tests.utils import hand_off, hidden_context, make_account, remove_files, seal
 from ucm_migration_loader.ucm_migration_loader import run_overview
@@ -48,7 +48,7 @@ class OperatorCase(IntegrationTestCase):
 		frappe.set_user(acting)
 
 	def state(self, run):
-		return frappe.db.get_value(api.RUN, run, "state")
+		return frappe.db.get_value(constants.RUN, run, "state")
 
 
 class TestApproval(OperatorCase):
@@ -62,12 +62,12 @@ class TestApproval(OperatorCase):
 		self.assertTrue(found["context"]["exists"])
 		self.assertIsNone(found["context"]["problem"])
 		self.assertIsNone(found["known"])
-		self.assertFalse(frappe.db.exists(api.RUN, run))  # reading it changes nothing
+		self.assertFalse(frappe.db.exists(constants.RUN, run))  # reading it changes nothing
 
 	def test_an_approval_makes_a_run_that_waits_for_its_file(self):
 		path, run, handoff = self.sealed()
 		result = operator.approve(handoff, self.publisher)
-		record = frappe.get_doc(api.RUN, run)
+		record = frappe.get_doc(constants.RUN, run)
 		self.assertEqual((record.state, record.publishing_user), (AWAITING, self.publisher))
 		self.assertEqual((record.document_count, record.received, record.applied), (1, 1, 0))
 		self.assertEqual(result["display_id"], record.display_id)
@@ -82,7 +82,7 @@ class TestApproval(OperatorCase):
 	def test_the_waiting_run_shows_who_approved_it_and_what_has_arrived(self):
 		path, run, handoff = self.sealed()
 		operator.approve(handoff, self.publisher)
-		shown = run_overview.build(frappe.get_doc(api.RUN, run))
+		shown = run_overview.build(frappe.get_doc(constants.RUN, run))
 		statuses = [(step["step"], step["status"]) for step in shown["steps"]]
 		self.assertEqual(statuses[0], ("stage", "waiting"))
 		self.assertTrue(all(status == "waiting" for _step, status in statuses[1:]))
@@ -91,7 +91,7 @@ class TestApproval(OperatorCase):
 		self.assertEqual((facts["arrived"], facts["bytes"]), (0, path.stat().st_size))
 		self.assertIsNone(shown["facts"]["route"])
 		self.send(path, run)
-		arrived = run_overview.build(frappe.get_doc(api.RUN, run))["steps"][0]
+		arrived = run_overview.build(frappe.get_doc(constants.RUN, run))["steps"][0]
 		self.assertEqual((arrived["status"], arrived["facts"]["arrived"]), ("running", path.stat().st_size))
 
 	def test_the_sender_reads_the_waiting_run(self):
@@ -120,7 +120,7 @@ class TestApproval(OperatorCase):
 		self.assertRaisesRegex(
 			frappe.ValidationError, "enabled publishing account", operator.approve, handoff, "Guest"
 		)
-		self.assertFalse(frappe.db.exists(api.RUN, run))
+		self.assertFalse(frappe.db.exists(constants.RUN, run))
 
 	def test_only_a_migration_admin_approves(self):
 		_path, _run, handoff = self.sealed()
@@ -133,7 +133,7 @@ class TestApproval(OperatorCase):
 			self.assertRaises(frappe.PermissionError, operator.approve, handoff, self.publisher)
 			self.assertRaises(frappe.PermissionError, operator.stage_arrived, handoff["run"])
 		# a System Manager reads the runs, and gives the role; it does not act on a run
-		self.assertTrue(frappe.has_permission(api.RUN, "read"))
+		self.assertTrue(frappe.has_permission(constants.RUN, "read"))
 		self.assertRaises(frappe.PermissionError, api.activate, handoff["run"])
 
 	def test_an_approval_can_be_repeated_but_not_changed(self):
@@ -142,7 +142,7 @@ class TestApproval(OperatorCase):
 		self.assertEqual(operator.approve(handoff, self.publisher)["display_id"], first["display_id"])
 		other = make_account("other-sender")
 		self.assertRaisesRegex(frappe.ValidationError, "approved before", operator.approve, handoff, other)
-		self.assertEqual(frappe.db.get_value(api.RUN, run, "publishing_user"), self.publisher)
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "publishing_user"), self.publisher)
 
 	def test_an_approval_can_be_withdrawn(self):
 		path, run, handoff = self.sealed()
@@ -178,7 +178,7 @@ class TestProposal(OperatorCase):
 
 	def test_a_proposal_is_a_run_that_waits_for_approval(self):
 		path, run, _handoff, result = self.proposed()
-		record = frappe.get_doc(api.RUN, run)
+		record = frappe.get_doc(constants.RUN, run)
 		self.assertEqual((record.state, record.publishing_user), ("Proposed", self.proposer))
 		self.assertEqual((result["state"], result["display_id"]), ("Proposed", record.display_id))
 		self.assertEqual(record.document_count, 1)
@@ -200,7 +200,7 @@ class TestProposal(OperatorCase):
 		for account in (self.admin, self.publisher, "Guest"):
 			frappe.set_user(account)
 			self.assertRaises(frappe.PermissionError, api.propose, handoff)
-		self.assertFalse(frappe.db.exists(api.RUN, run))
+		self.assertFalse(frappe.db.exists(constants.RUN, run))
 
 	def test_a_hand_off_that_was_changed_or_is_for_another_site_is_not_proposed(self):
 		_path, run, handoff = self.sealed()
@@ -210,7 +210,7 @@ class TestProposal(OperatorCase):
 		)
 		handoff["counts"]["Person"] = 5
 		self.assertRaisesRegex(frappe.ValidationError, "does not match", api.propose, handoff)
-		self.assertFalse(frappe.db.exists(api.RUN, run))
+		self.assertFalse(frappe.db.exists(constants.RUN, run))
 
 	def test_a_proposal_can_be_repeated_by_its_account_only(self):
 		_path, run, handoff, result = self.proposed()
@@ -218,7 +218,7 @@ class TestProposal(OperatorCase):
 		self.assertEqual(api.propose(handoff), result)
 		frappe.set_user(make_account("other-proposer", publisher=True))
 		self.assertRaises(frappe.PermissionError, api.propose, handoff)
-		self.assertEqual(frappe.db.get_value(api.RUN, run, "publishing_user"), self.proposer)
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "publishing_user"), self.proposer)
 
 	def test_the_approver_sees_the_proposal_without_its_fingerprint(self):
 		path, run, handoff, _result = self.proposed()
@@ -241,7 +241,7 @@ class TestProposal(OperatorCase):
 		typed = self.code(handoff).lower().replace("-", " ")  # as a person types what they were told
 		approved = desk.approve_proposed(run, typed)
 		self.assertEqual((approved["run"], self.state(run)), (run, AWAITING))
-		facts = json.loads(frappe.db.get_value(api.RUN, run, "approval_json"))
+		facts = json.loads(frappe.db.get_value(constants.RUN, run, "approval_json"))
 		self.assertEqual(
 			(facts["proposed_by"], facts["by"], facts["publisher"]),
 			(self.proposer, self.admin, self.proposer),
@@ -262,7 +262,7 @@ class TestProposal(OperatorCase):
 		frappe.set_user(self.proposer)
 		api.propose(handoff)
 		frappe.set_user(self.admin)
-		self.assertEqual(frappe.db.get_value(api.RUN, run, "delegation"), "Proposed delegation (LDP7)")
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "delegation"), "Proposed delegation (LDP7)")
 		self.assertFalse(frappe.db.exists("Context", context))  # a proposal prepares nothing
 		self.assertFalse(desk.inspect_proposed(run)["context"]["exists"])
 		self.assertTrue(desk.approve_proposed(run, self.code(handoff))["context_made"])
@@ -284,7 +284,7 @@ class TestProposal(OperatorCase):
 		frappe.set_user(self.admin)
 		self.assertEqual(api.discard(run)["state"], "Discarded")
 		# the list still names the delegation as its hand-off did
-		self.assertEqual(frappe.db.get_value(api.RUN, run, "delegation"), "Declined delegation (LDP8)")
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "delegation"), "Declined delegation (LDP8)")
 		self.assertFalse(frappe.db.exists("Context", context))
 
 	def test_a_declined_proposal_is_not_approved_and_no_file_is_accepted_for_it(self):
@@ -350,7 +350,7 @@ class TestContext(OperatorCase):
 		)
 		self.assertEqual((made.context_code, made.context_name), ("LDN7", "A new delegation"))
 		self.assertEqual((made.context_status, made.context_discoverability), ("Locked", "Hidden"))
-		self.assertEqual(frappe.db.get_value(api.RUN, run, "delegation"), "A new delegation (LDN7)")
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "delegation"), "A new delegation (LDN7)")
 
 	def test_the_approver_names_a_delegation_the_hand_off_does_not(self):
 		context = str(uuid.uuid4())
@@ -369,7 +369,7 @@ class TestContext(OperatorCase):
 		self.assertRaisesRegex(
 			frappe.ValidationError, "not locked and hidden", operator.approve, handoff, self.publisher
 		)
-		self.assertFalse(frappe.db.exists(api.RUN, run))
+		self.assertFalse(frappe.db.exists(constants.RUN, run))
 
 	def test_a_context_that_holds_records_is_refused(self):
 		from ucm.tests.utils import make_person
@@ -407,7 +407,7 @@ class TestStagingAfterArrival(OperatorCase):
 		queued.assert_called_once()
 		job = queued.call_args
 		self.assertEqual(job.args[0], "ucm_migration_loader.publication_transport.stage_arrived")
-		self.assertEqual((job.kwargs["run"], job.kwargs["queue"]), (run, api.QUEUE))
+		self.assertEqual((job.kwargs["run"], job.kwargs["queue"]), (run, constants.QUEUE))
 		self.assertTrue(job.kwargs["enqueue_after_commit"] and job.kwargs["deduplicate"])
 
 	def test_a_file_approved_without_a_run_is_staged_by_hand_only(self):
@@ -427,7 +427,7 @@ class TestStagingAfterArrival(OperatorCase):
 		frappe.set_user(self.publisher)  # the job is queued by the sender's last piece
 		publication_transport.stage_arrived(run)
 		self.assertEqual(frappe.session.user, self.admin)
-		record = frappe.get_doc(api.RUN, run)
+		record = frappe.get_doc(constants.RUN, run)
 		self.assertEqual((record.state, record.display_id), ("Publication staged", number))
 		self.assertEqual((record.publishing_user, record.finding), (self.publisher, None))
 		self.assertEqual(json.loads(record.approval_json)["by"], self.admin)
@@ -468,7 +468,7 @@ class TestStagingAfterArrival(OperatorCase):
 		# the refusal is committed by the receiver; the test keeps it in its own transaction
 		with patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
 			publication_transport.stage_arrived(run)
-		record = frappe.get_doc(api.RUN, run)
+		record = frappe.get_doc(constants.RUN, run)
 		self.assertEqual(record.state, "Rejected")
 		self.assertEqual(record.finding, "Preflight refused: application versions differ")
 		with patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
@@ -489,12 +489,12 @@ class TestStagingAfterArrival(OperatorCase):
 			patch.object(frappe.db, "rollback"),
 		):
 			self.assertRaises(ValueError, publication_transport.stage_arrived, run)
-		record = frappe.get_doc(api.RUN, run)
+		record = frappe.get_doc(constants.RUN, run)
 		self.assertEqual(record.state, AWAITING)
 		self.assertEqual(record.finding, "Staging failed: Transfer differs from the approved file")
 		# asked again from the Desk, once the cause is gone
 		self.assertEqual(desk.stage_now(run)["outcome"], "staged")
-		self.assertIsNone(frappe.db.get_value(api.RUN, run, "finding"))
+		self.assertIsNone(frappe.db.get_value(constants.RUN, run, "finding"))
 
 	def test_an_approver_who_lost_the_role_stages_nothing(self):
 		leaving = make_account("leaving-admin", operator=True)
@@ -507,7 +507,9 @@ class TestStagingAfterArrival(OperatorCase):
 		with patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
 			self.assertRaises(frappe.PermissionError, publication_transport.stage_arrived, run)
 		self.assertEqual(self.state(run), AWAITING)
-		self.assertEqual(frappe.db.get_value(api.RUN, run, "finding"), "Staging failed: PermissionError")
+		self.assertEqual(
+			frappe.db.get_value(constants.RUN, run, "finding"), "Staging failed: PermissionError"
+		)
 
 	def test_a_file_that_has_not_arrived_is_not_staged(self):
 		path, run, handoff = self.sealed()

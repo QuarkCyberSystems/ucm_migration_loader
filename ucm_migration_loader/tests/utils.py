@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import frappe
 
-from ucm_migration_loader import api, publication_index
+from ucm_migration_loader import constants, publication_index
 from ucm_migration_loader.contract import digest, encoded, table_signatures
 from ucm_migration_loader.frozen import (
 	CHILDREN,
@@ -75,7 +75,7 @@ def make_run(state="Publication ready", report=None, route="Set-based SQL", cont
 	}
 	record = frappe.get_doc(
 		{
-			"doctype": api.RUN,
+			"doctype": constants.RUN,
 			"context_id": manifest["context"],
 			"snapshot_id": manifest["snapshot"],
 			"manifest_json": encoded(manifest).decode(),
@@ -97,7 +97,7 @@ def make_receipt(run: str, sequence: int, **values):
 	"""The receipt of one applied batch of a run."""
 	receipt = frappe.get_doc(
 		{
-			"doctype": api.BATCH,
+			"doctype": constants.BATCH,
 			"migration_run": run,
 			"sequence_number": sequence,
 			"digest": "c" * 64,

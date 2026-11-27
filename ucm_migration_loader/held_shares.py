@@ -10,19 +10,18 @@ from operator import attrgetter
 
 import frappe
 
-from . import api
+from . import constants, runs
+from .constants import HELD
 from .contract import digest
 from .frozen import FORMAT, reference_digest
 from .publication_receiver import local_publication
 from .publication_shares import IneligibleShare, check_share
 
-HELD = "UCM Migration Held Share"
-
 
 def lock_activation():
 	# Two delegations may point shares at each other. Order the two activation
 	# transactions before either locks a context or discovers the other's receipts.
-	frappe.db.get_value("DocType", api.RUN, "name", for_update=True)
+	frappe.db.get_value("DocType", constants.RUN, "name", for_update=True)
 
 
 def hold(record, raw, sequence, position):
@@ -62,8 +61,8 @@ def release_incoming(ctx, receiving_run):
 	)
 	outcomes = Counter()
 	for run, entries in groupby(held, key=attrgetter("migration_run")):
-		source = api._record(run)
-		if source.state != "Activated":
+		source = runs.record(run)
+		if source.state != constants.ACTIVATED:
 			raise ValueError("Held share source run has not been activated")
 		uri = local_publication(run).resolve(strict=True).as_uri() + "?mode=ro"
 		with closing(sqlite3.connect(uri, uri=True)) as db:
@@ -90,7 +89,7 @@ def release_incoming(ctx, receiving_run):
 				sha, payload = db.execute(
 					"select sha,payload from batches where sequence=?", (seq,)
 				).fetchone()
-				receipt = frappe.get_doc(api.BATCH, f"{run}-{seq}", for_update=True)
+				receipt = frappe.get_doc(constants.BATCH, f"{run}-{seq}", for_update=True)
 				if (receipt.migration_run, receipt.sequence_number, receipt.digest) != (
 					run,
 					seq,

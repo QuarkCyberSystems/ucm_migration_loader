@@ -50,7 +50,9 @@ def insert_activity(
 ):
 	import frappe
 
-	frappe.only_for("Migration Admin")
+	from .runs import only_admin
+
+	only_admin()
 	row = dict(published)
 	department = row["protection_department_tech_id"]
 	row["protection_department_tech_id"] = crosswalk.get(("Protection Department", department), department)

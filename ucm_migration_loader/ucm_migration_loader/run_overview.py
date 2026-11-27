@@ -4,21 +4,24 @@ and the few times noted here. Sentences are composed on the form, in the user's 
 
 import json
 
+from ucm_migration_loader.constants import (
+	ACTIVATED,
+	APPLYING,
+	AWAITING,
+	BY_DOCTYPE,
+	CLEANING,
+	DISCARDED,
+	DOCUMENT,
+	PAUSED,
+	PROPOSED,
+	READY,
+	REJECTED,
+	SET_BASED,
+	STAGED,
+)
+
 from . import data_quality
 
-SET_BASED = "Set-based SQL"
-DOCUMENT = "Document API"
-BY_DOCTYPE = "By DocType"
-STAGED = "Publication staged"
-APPLYING = "Publication applying"
-PAUSED = "Publication paused"
-READY = "Publication ready"
-CLEANING = "Publication cleaning"
-ACTIVATED = "Activated"
-DISCARDED = "Discarded"
-REJECTED = "Rejected"
-AWAITING = "Awaiting publication"
-PROPOSED = "Proposed"
 # what the first unfinished step is doing, by the run's state
 _UNFINISHED = {
 	APPLYING: "running",
@@ -230,10 +233,10 @@ def working(run: str) -> bool | None:
 	import frappe
 	from frappe.utils.background_jobs import get_queue
 
-	from ucm_migration_loader import api
+	from ucm_migration_loader import constants
 
 	try:
-		queue = get_queue(api.QUEUE)
+		queue = get_queue(constants.QUEUE)
 		for job_id in (*queue.get_job_ids(), *queue.started_job_registry.get_job_ids()):
 			job = queue.fetch_job(job_id)
 			kwargs = (job.kwargs if job else None) or {}
@@ -366,9 +369,9 @@ def refresh(run: str) -> None:
 	"""Keep the columns of the run list in step with the run: its delegation, its route and the time it worked."""
 	import frappe
 
-	from ucm_migration_loader import api
+	from ucm_migration_loader import constants
 
-	record = frappe.get_doc(api.RUN, run)
+	record = frappe.get_doc(constants.RUN, run)
 	manifest = _json(record.manifest_json)
 	# a refused publication was given no route; a run without a measured step shows no time
 	route = (
@@ -377,7 +380,7 @@ def refresh(run: str) -> None:
 	values = {"delegation": _delegation(record)[:140], "write_route": route}
 	if is_publication(manifest):
 		values["duration"] = round(duration(_parts(record)[3])) or None
-	frappe.db.set_value(api.RUN, run, values, update_modified=False)
+	frappe.db.set_value(constants.RUN, run, values, update_modified=False)
 
 
 def note(run: str, step: str, seconds: float | None = None, **facts) -> None:
@@ -386,14 +389,14 @@ def note(run: str, step: str, seconds: float | None = None, **facts) -> None:
 	import frappe
 	from frappe.utils import now_datetime
 
-	from ucm_migration_loader import api
+	from ucm_migration_loader import constants
 
-	timeline = _json(frappe.db.get_value(api.RUN, run, "timeline_json"))
+	timeline = _json(frappe.db.get_value(constants.RUN, run, "timeline_json"))
 	entry = timeline.setdefault(step, {})
 	if seconds is not None:
 		entry["seconds"] = round(entry.get("seconds", 0) + seconds, 2)
 	entry.update(facts, at=str(now_datetime()))
-	frappe.db.set_value(api.RUN, run, "timeline_json", json.dumps(timeline), update_modified=False)
+	frappe.db.set_value(constants.RUN, run, "timeline_json", json.dumps(timeline), update_modified=False)
 
 
 def staged(run: str, seconds: float, business_batches: int) -> None:

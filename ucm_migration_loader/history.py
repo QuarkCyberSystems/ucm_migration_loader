@@ -3,7 +3,7 @@
 import frappe
 from frappe.utils import get_datetime, now_datetime
 
-from .application import check_closed
+from .runs import check_closed
 from .stored_rows import insert_document
 
 
@@ -15,7 +15,9 @@ def insert_history(row, *, insert=insert_document):
 		set_locked,
 	)
 
-	frappe.only_for("Migration Admin")
+	from .runs import only_admin
+
+	only_admin()
 	ctx = frappe.get_doc("Context", row["context_tech_id"], for_update=True)
 	check_closed(ctx)
 	locked, actor, when = row[LOCKED], row[BY], row[ON]

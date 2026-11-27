@@ -91,12 +91,12 @@ def test_a_job_holds_a_run_until_it_is_paused_or_taken():
 
 
 def test_progress_of_another_route_is_not_taken_over():
-	kept = {"route": set_based.ROUTE, "derived": {"place geography": 0}}
+	kept = {"route": set_based.SET_BASED, "derived": {"place geography": 0}}
 	assert set_based._progress(Run(reconcile_counts=json.dumps(kept))) == kept
 	assert set_based._progress(Run(reconcile_counts=json.dumps({"checked": {}}))) == {
-		"route": set_based.ROUTE
+		"route": set_based.SET_BASED
 	}
-	assert set_based._progress(Run()) == {"route": set_based.ROUTE}
+	assert set_based._progress(Run()) == {"route": set_based.SET_BASED}
 
 
 def test_the_set_based_route_is_for_a_whole_run():

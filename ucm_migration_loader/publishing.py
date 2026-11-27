@@ -37,6 +37,7 @@ import tomllib
 from datetime import date
 from pathlib import Path
 
+from . import constants
 from .contract import MAX_PUBLICATION_BATCH_BYTES, MAX_PUBLICATION_BATCH_DOCUMENTS
 
 SETTINGS = "ucm-push.toml"
@@ -47,16 +48,16 @@ ALIASES = {"send": "send-publication", "sent": "transfer-status"}
 LOCAL = ("source-inventory", "upload-order", "prepare", "check-publication", "locate-item")
 ON_A_RUN = ("propose", "send-publication", "transfer-status", "status", "report", "quality", "locate-item")
 STATE = {
-	"Proposed": "Proposed: the site's migration team has not approved it yet",
-	"Awaiting publication": "Approved: the site waits for the sealed file",
-	"Publication staged": "Staged: checked, nothing written yet",
-	"Publication applying": "Loading",
-	"Publication paused": "Paused",
-	"Publication ready": "Verified, waiting for the go-live decision",
-	"Publication cleaning": "Being discarded",
-	"Activated": "Activated: the delegation is open to its users",
-	"Discarded": "Discarded",
-	"Rejected": "Refused by the site",
+	constants.PROPOSED: "Proposed: the site's migration team has not approved it yet",
+	constants.AWAITING: "Approved: the site waits for the sealed file",
+	constants.STAGED: "Staged: checked, nothing written yet",
+	constants.APPLYING: "Loading",
+	constants.PAUSED: "Paused",
+	constants.READY: "Verified, waiting for the go-live decision",
+	constants.CLEANING: "Being discarded",
+	constants.ACTIVATED: "Activated: the delegation is open to its users",
+	constants.DISCARDED: "Discarded",
+	constants.REJECTED: "Refused by the site",
 }
 
 
@@ -252,7 +253,7 @@ def sentences(action: str, result: dict) -> str | None:
 	"""A command's result in sentences, for the commands an operator runs by hand. Nothing for the others, whose
 	result is shown as JSON."""
 	if action == "propose":
-		if result["state"] != "Proposed":
+		if result["state"] != constants.PROPOSED:
 			state = STATE.get(result["state"], result["state"])
 			return f"Run {_short(result['run'])} is on the site already, as {result['display_id']}: {state}."
 		return (
@@ -279,7 +280,7 @@ def sentences(action: str, result: dict) -> str | None:
 		)
 	if action == "status":
 		state = STATE.get(result["state"], result["state"])
-		if result["state"] == "Publication applying":
+		if result["state"] == constants.APPLYING:
 			state += f": {result['applied']:,} of {result['received']:,} batches written"
 			state += f", {result['reconciled_batches']:,} verified"
 		lines = [f"Run {_short(result['run'])}: {state}."]

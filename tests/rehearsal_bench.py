@@ -17,7 +17,7 @@ import frappe
 import requests
 from werkzeug.serving import make_server
 
-from ucm_migration_loader import api
+from ucm_migration_loader import api, constants
 
 BENCH = next(root for root in Path(__file__).resolve().parents if (root / "sites" / "apps.txt").is_file())
 
@@ -34,7 +34,7 @@ def call(method, **params):
 
 def worker():
 	frappe.db.commit()
-	subprocess.run(["bench", "worker", "--queue", api.QUEUE, "--burst", "--quiet"], check=True)
+	subprocess.run(["bench", "worker", "--queue", constants.QUEUE, "--burst", "--quiet"], check=True)
 	frappe.db.rollback()
 
 

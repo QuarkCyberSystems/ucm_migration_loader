@@ -251,8 +251,8 @@ def load(path: Path | None, run: str, sample_every: int) -> dict:
 
 def reconcile(run: str) -> dict:
 	"""The document route's own reconciliation of every stored record, over rows the set-based route wrote."""
-	from ucm_migration_loader.application import lock_run
 	from ucm_migration_loader.publication_worker import reconcile_business
+	from ucm_migration_loader.runs import lock_run
 	from ucm_migration_loader.ucm_migration_loader.set_based import _publication
 
 	started = time.monotonic()

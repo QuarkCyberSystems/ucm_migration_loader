@@ -2,8 +2,7 @@
 
 import frappe
 
-# may propose a hand-off and send the file of an approved one, through ucm-push; holds no right in the Desk
-PUBLISHER = "Migration Publisher"
+from .constants import PUBLISHER
 
 
 def after_install():
@@ -15,8 +14,9 @@ def after_migrate():
 
 
 def ensure_roles() -> None:
-	"""The role of a publishing account. The Migration Admin role comes with the DocTypes' permission rows; this
-	one reads no DocType, so nothing else brings it."""
+	"""The role of a publishing account, which may propose its hand-offs through ucm-push and holds no right in
+	the Desk. The Migration Admin role comes with the DocTypes' permission rows; this one reads no DocType, so
+	nothing else brings it."""
 	if not frappe.db.exists("Role", PUBLISHER):
 		# a role of the app itself, made by the app: whoever installs or migrates may not manage roles
 		frappe.get_doc({"doctype": "Role", "role_name": PUBLISHER, "desk_access": 0}).insert(

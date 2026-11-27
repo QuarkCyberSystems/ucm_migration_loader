@@ -8,11 +8,11 @@ from time import monotonic
 
 import frappe
 
-from . import api, publication_index
-from .application import check_closed, lock_run
+from . import constants, publication_index, runs
 from .frozen import ORDER
 from .publication_receiver import indexed_publication, remove_after_discard
 from .publication_worker import audit_values
+from .runs import check_closed, lock_run
 from .stored_rows import checked_row
 
 
@@ -53,7 +53,7 @@ def remove_item(db, context, item):
 	from ucm.ucm.doctype.activity_detail.activity_detail import LOCKED, set_locked
 
 	dt, raw = item["doctype"], item["row"]
-	if dt not in ORDER or dt in ("ToDo", "Record Share") or raw["context_tech_id"] != context:
+	if dt not in ORDER or dt in constants.DEFERRED or raw["context_tech_id"] != context:
 		raise ValueError("Unexpected cleanup document")
 	checked_row(dt, {**audit_values(raw), "context_tech_id": context})
 	# Frappe cascades all child tables and files. Reject anything beyond this run's inventory.
@@ -112,19 +112,19 @@ def remove_item(db, context, item):
 def discard(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadline=None):
 	"""Remove committed batches in reverse, one transaction each. A queued job passes a
 	monotonic `deadline`: no batch is started after it, and the next job continues."""
-	api._operator()
+	runs.only_admin()
 	if int(max_batches) < 1:
 		raise ValueError("Select a positive batch limit")
 	ctx, record = lock_run(run)
-	if record.state == "Discarded":
+	if record.state == constants.DISCARDED:
 		remove_after_discard(record)
-		return api._result(record)
+		return runs.result(record)
 	if record.state not in (
-		"Publication staged",
-		"Publication applying",
-		"Publication paused",
-		"Publication ready",
-		"Publication cleaning",
+		constants.STAGED,
+		constants.APPLYING,
+		constants.PAUSED,
+		constants.READY,
+		constants.CLEANING,
 	):
 		raise ValueError("Only a hidden full publication can be discarded")
 	with indexed_publication(run, record) as (db, hashes, manifest, path, stamp):
@@ -138,26 +138,26 @@ def discard(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadli
 			try:
 				ctx, record = lock_run(run)
 				if ticket is not None and record.dispatch_id != ticket:
-					return api._result(record)
+					return runs.result(record)
 				if stop_at is not None and record.applied and record.applied <= stop_at:
-					return api._result(record)
+					return runs.result(record)
 				if deadline is not None and monotonic() > deadline:
-					return api._result(record)
-				if record.state == "Discarded":
-					return api._result(record)
+					return runs.result(record)
+				if record.state == constants.DISCARDED:
+					return runs.result(record)
 				if record.state not in (
-					"Publication staged",
-					"Publication applying",
-					"Publication paused",
-					"Publication ready",
-					"Publication cleaning",
+					constants.STAGED,
+					constants.APPLYING,
+					constants.PAUSED,
+					constants.READY,
+					constants.CLEANING,
 				):
 					raise ValueError("Publication is no longer eligible for discard")
 				check_closed(ctx)
 				sequence = record.applied or 0
 				if sequence:
 					sha, payload = publication_index.read_batch(db, hashes, sequence, manifest["batches"])
-					batch = frappe.get_doc(api.BATCH, f"{run}-{sequence}", for_update=True)
+					batch = frappe.get_doc(constants.BATCH, f"{run}-{sequence}", for_update=True)
 					if (batch.digest, batch.sequence_number, batch.migration_run) != (
 						sha,
 						sequence,
@@ -167,7 +167,7 @@ def discard(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadli
 					for item in reversed(json.loads(payload)):
 						remove_item(db, ctx.name, item)
 				record.applied = max(0, sequence - 1)
-				record.state = "Publication cleaning" if record.applied else "Discarded"
+				record.state = constants.CLEANING if record.applied else constants.DISCARDED
 				record.save(ignore_permissions=True)
 				if not record.applied:
 					remove_after_discard(record)
@@ -178,4 +178,4 @@ def discard(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadli
 			except Exception:
 				frappe.db.rollback()
 				raise
-		return api._result(record)
+		return runs.result(record)

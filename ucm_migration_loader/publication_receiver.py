@@ -13,7 +13,7 @@ from time import monotonic
 
 import frappe
 
-from . import api, publication_index
+from . import constants, publication_index, runs
 from .contract import encoded, table_signatures
 from .frozen import (
 	CHILDREN,
@@ -71,7 +71,7 @@ def release_differences(manifest):
 
 def preflight(path: str, run: str):
 	"""Read-only inventory. Report counts without exposing record IDs or field values."""
-	api._operator()
+	runs.only_admin()
 	uri = Path(path).resolve(strict=True).as_uri() + "?mode=ro"
 	with closing(sqlite3.connect(uri, uri=True)) as db:
 		db.execute("pragma trusted_schema=OFF")
@@ -126,12 +126,12 @@ REFUSALS = (
 def _staged_before(run, manifest, dest):
 	"""The run this publication already has on the site, where it was staged before. A file that was
 	refused before is checked again from the start, and takes over the refusal's record."""
-	if not frappe.db.get_value(api.RUN, run, "name", for_update=True):
+	if not frappe.db.get_value(constants.RUN, run, "name", for_update=True):
 		return None
-	record = api._record(run)
-	if json.loads(record.manifest_json) != manifest or record.state == "Discarded":
+	record = runs.record(run)
+	if json.loads(record.manifest_json) != manifest or record.state == constants.DISCARDED:
 		raise ValueError("Existing run cannot receive this publication")
-	if record.state in ("Rejected", api.AWAITING, api.PROPOSED):
+	if record.state in (constants.REJECTED, constants.AWAITING, constants.PROPOSED):
 		return None
 	verify_publication(dest, run)
 	return record
@@ -139,12 +139,12 @@ def _staged_before(run, manifest, dest):
 
 def _keep_run(run, values):
 	"""Insert a run under its publication's identity, or take over the record a refusal left."""
-	if frappe.db.exists(api.RUN, run):
-		record = frappe.get_doc(api.RUN, run, for_update=True)
+	if frappe.db.exists(constants.RUN, run):
+		record = frappe.get_doc(constants.RUN, run, for_update=True)
 		record.update(values)
 		record.save(ignore_permissions=True)
 	else:
-		record = frappe.get_doc({"doctype": api.RUN, **values})
+		record = frappe.get_doc({"doctype": constants.RUN, **values})
 		record.insert(set_name=run, ignore_permissions=True)
 	return record
 
@@ -161,7 +161,7 @@ def _refuse(run, manifest, inventory, seconds):
 			"context_id": manifest["context"],
 			"snapshot_id": manifest["snapshot"],
 			"manifest_json": encoded(manifest).decode(),
-			"state": "Rejected",
+			"state": constants.REJECTED,
 			"received": manifest["batches"],
 			"applied": 0,
 			"document_count": sum(manifest["counts"].values()),
@@ -177,7 +177,7 @@ def _refuse(run, manifest, inventory, seconds):
 
 def stage(path: str, run: str):
 	"""Bench operator entry point. Register only a verified private copy on this site."""
-	api._operator()
+	runs.only_admin()
 	started = monotonic()
 	dest = local_publication(run)
 	dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -195,7 +195,7 @@ def stage(path: str, run: str):
 		frappe.db.get_value("Context", context, "name", for_update=True)
 		record = _staged_before(run, manifest, dest)
 		if record:
-			return api._result(record)
+			return runs.result(record)
 		if "Organization" not in manifest["counts"] or "sensitive_field_policy" not in manifest:
 			raise ValueError(
 				"Freeze a new publication including organizations and the sensitive field policy"
@@ -213,7 +213,7 @@ def stage(path: str, run: str):
 		):
 			_refuse(run, manifest, inventory, monotonic() - started)
 			raise ValueError(f"Publication preflight failed: {inventory}")
-		from .application import check_closed
+		from .runs import check_closed
 
 		ctx = frappe.get_doc("Context", context, for_update=True)
 		check_closed(ctx)
@@ -226,10 +226,10 @@ def stage(path: str, run: str):
 			):
 				raise ValueError(f"Incoming delegation already contains {dt} records")
 		if frappe.db.get_value(
-			api.RUN,
+			constants.RUN,
 			{
 				"context_id": context,
-				"state": ["not in", ("Discarded", "Rejected", api.PROPOSED)],
+				"state": ["not in", (constants.DISCARDED, constants.REJECTED, constants.PROPOSED)],
 				"name": ["!=", run],
 			},
 			"name",
@@ -261,7 +261,7 @@ def stage(path: str, run: str):
 				"snapshot_id": manifest["snapshot"],
 				"manifest_json": encoded(manifest).decode(),
 				"write_plan_json": json.dumps(default_plan(manifest)),
-				"state": "Publication staged",
+				"state": constants.STAGED,
 				"publication_stamp": stamp,
 				"received": manifest["batches"],
 				"applied": 0,
@@ -273,7 +273,7 @@ def stage(path: str, run: str):
 		)
 		# the form's step list: how long the check and staging took, and where the business batches end
 		run_overview.staged(run, monotonic() - started, business)
-		return api._result(record)
+		return runs.result(record)
 
 
 @contextmanager
@@ -296,7 +296,7 @@ def indexed_publication(run, initial):
 			if publication_index.identity(path) != opened_identity:
 				raise ValueError("Publication changed during verification")
 			value = publication_index.build_index(db, path, manifest)
-			frappe.db.set_value(api.RUN, run, "publication_stamp", value)
+			frappe.db.set_value(constants.RUN, run, "publication_stamp", value)
 			stamp = json.loads(value)
 		if opened_identity != stamp[0]:
 			raise ValueError("Publication changed while opening snapshot")
@@ -307,8 +307,8 @@ def indexed_publication(run, initial):
 
 def rebuild_index(run: str):
 	"""Restore an index after a site restore; require the entire file to verify first."""
-	api._operator()
-	from .application import lock_run
+	runs.only_admin()
+	from .runs import lock_run
 
 	_, record = lock_run(run)
 	path = local_publication(run).resolve(strict=True)
@@ -322,7 +322,7 @@ def rebuild_index(run: str):
 		if publication_index.identity(path) != original:
 			raise ValueError("Publication changed while verifying restored file")
 		stamp = publication_index.build_index(db, path, manifest)
-		frappe.db.set_value(api.RUN, run, "publication_stamp", stamp)
+		frappe.db.set_value(constants.RUN, run, "publication_stamp", stamp)
 	return {"run": run, "verified_batches": manifest["batches"]}
 
 

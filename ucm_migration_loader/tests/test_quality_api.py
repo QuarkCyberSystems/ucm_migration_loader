@@ -6,7 +6,7 @@ import json
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from ucm_migration_loader import api
+from ucm_migration_loader import api, constants, runs
 from ucm_migration_loader.contract import digest
 from ucm_migration_loader.tests.utils import FOUND, REPORT, make_account, make_run
 from ucm_migration_loader.ucm_migration_loader import data_quality
@@ -77,31 +77,31 @@ class TestQualityAPI(IntegrationTestCase):
 
 	def test_a_run_that_is_no_sealed_publication_has_no_metrics(self):
 		run = make_run(report=REPORT).name
-		frappe.db.set_value(api.RUN, run, "manifest_json", json.dumps({"profile": "earlier"}))
+		frappe.db.set_value(constants.RUN, run, "manifest_json", json.dumps({"profile": "earlier"}))
 		self.assertRaisesRegex(ValueError, "sealed publications", api.quality, run)
 
 	def test_the_run_records_the_hand_over(self):
-		before = frappe.db.get_value(api.RUN, self.run_name, "modified")
+		before = frappe.db.get_value(constants.RUN, self.run_name, "modified")
 		frappe.set_user(self.publisher)
 		document = api.quality(self.run_name)
 		receipt = api.quality_received(
 			self.run_name, document["sha256"], len(document["metrics"]), "table ucm_target_metric"
 		)
 		frappe.set_user("Administrator")
-		kept = json.loads(frappe.db.get_value(api.RUN, self.run_name, "quality_json"))
+		kept = json.loads(frappe.db.get_value(constants.RUN, self.run_name, "quality_json"))
 		self.assertEqual(kept, receipt)
 		self.assertEqual(
 			(kept["rows"], kept["sha256"], kept["destination"], kept["by"]),
 			(len(document["metrics"]), document["sha256"], "table ucm_target_metric", self.publisher),
 		)
 		# the hand-over is not a step of the load: the run keeps the time of its last step, and so do its metrics
-		self.assertEqual(frappe.db.get_value(api.RUN, self.run_name, "modified"), before)
+		self.assertEqual(frappe.db.get_value(constants.RUN, self.run_name, "modified"), before)
 		self.assertEqual(api.quality(self.run_name), document)
 
 	def hand_over_step(self) -> dict:
 		from ucm_migration_loader.ucm_migration_loader import run_overview
 
-		shown = run_overview.build(frappe.get_doc(api.RUN, self.run_name))
+		shown = run_overview.build(frappe.get_doc(constants.RUN, self.run_name))
 		return next(step for step in shown["steps"] if step["step"] == "hand over")
 
 	def test_the_form_shows_the_hand_over_until_the_run_changes(self):
@@ -111,7 +111,7 @@ class TestQualityAPI(IntegrationTestCase):
 		step = self.hand_over_step()
 		self.assertEqual((step["status"], step["facts"]["destination"]), ("done", "file m.csv"))
 		# the delegation is activated: the access rows are released, and the metrics say so
-		api.mark_activated(self.run_name)
+		runs.mark_activated(self.run_name)
 		step = self.hand_over_step()
 		self.assertEqual((step["status"], step["facts"]["current"]), ("waiting", False))
 		self.assertEqual(step["facts"]["destination"], "file m.csv")
@@ -124,12 +124,12 @@ class TestQualityAPI(IntegrationTestCase):
 		document = api.quality(self.run_name)
 		for destination in ("file first.csv", "file second.csv"):
 			api.quality_received(self.run_name, document["sha256"], len(document["metrics"]), destination)
-		kept = json.loads(frappe.db.get_value(api.RUN, self.run_name, "quality_json"))
+		kept = json.loads(frappe.db.get_value(constants.RUN, self.run_name, "quality_json"))
 		self.assertEqual(kept["destination"], "file second.csv")
 
 	def test_metrics_read_before_the_run_changed_are_not_recorded(self):
 		document = api.quality(self.run_name)
-		frappe.db.set_value(api.RUN, self.run_name, "reconciliation_json", json.dumps(FOUND))
+		frappe.db.set_value(constants.RUN, self.run_name, "reconciliation_json", json.dumps(FOUND))
 		self.assertRaisesRegex(
 			ValueError,
 			"changed since these metrics were read",
@@ -139,7 +139,7 @@ class TestQualityAPI(IntegrationTestCase):
 			len(document["metrics"]),
 			"file stale.csv",
 		)
-		self.assertIsNone(frappe.db.get_value(api.RUN, self.run_name, "quality_json"))
+		self.assertIsNone(frappe.db.get_value(constants.RUN, self.run_name, "quality_json"))
 
 	def test_a_wrong_row_count_is_not_recorded(self):
 		document = api.quality(self.run_name)
@@ -151,7 +151,7 @@ class TestQualityAPI(IntegrationTestCase):
 			len(document["metrics"]) - 1,
 			"file short.csv",
 		)
-		self.assertIsNone(frappe.db.get_value(api.RUN, self.run_name, "quality_json"))
+		self.assertIsNone(frappe.db.get_value(constants.RUN, self.run_name, "quality_json"))
 
 	def test_a_long_destination_is_cut(self):
 		document = api.quality(self.run_name)

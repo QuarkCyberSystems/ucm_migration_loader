@@ -5,6 +5,8 @@ The UCM site connects to nothing on the migration side. The push command asks fo
 them where the migration team keeps its metrics, and tells the run that it did. The rows hold counts and rule
 names, never a record's key or a field's value."""
 
+from ucm_migration_loader.constants import ACTIVATED, DEFERRED
+
 FORMAT = "ucm-target-metrics-v1"
 CRITICAL, HIGH, MEDIUM, LOW = "CRITICAL", "HIGH", "MEDIUM", "LOW"
 SEVERITIES = (CRITICAL, HIGH, MEDIUM, LOW)
@@ -32,7 +34,6 @@ COLUMNS = (
 	"severity",
 	"passed",
 )
-DEFERRED = ("ToDo", "Record Share")  # held back until the delegation is activated
 
 # A rule's name ends with what it checks (set_based._rules). A link that points nowhere or out of the delegation
 # is a broken relationship; a value outside its list is a wrong value set; a default left empty changes nothing
@@ -266,7 +267,7 @@ def metrics(run: dict, report: dict | None, steps: list[dict] | None = None) -> 
 	report = report or {}
 	found = findings(report)
 	rows = (
-		_completeness(report, run.get("state") == "Activated")
+		_completeness(report, run.get("state") == ACTIVATED)
 		+ _accuracy(report, found)
 		+ _integrity(report, found)
 	)

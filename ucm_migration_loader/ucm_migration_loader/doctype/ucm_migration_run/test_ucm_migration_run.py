@@ -6,7 +6,7 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from ucm_migration_loader import api
+from ucm_migration_loader import api, constants
 from ucm_migration_loader.tests.utils import FOUND, REPORT, make_account, make_receipt, make_run
 from ucm_migration_loader.ucm_migration_loader import run_overview
 from ucm_migration_loader.ucm_migration_loader.doctype.ucm_migration_run.ucm_migration_run import overview
@@ -38,21 +38,21 @@ class TestUCMMigrationRun(IntegrationTestCase):
 		run = make_run(report=REPORT, publishing_user=publisher).name
 		frappe.set_user(publisher)
 		self.assertRaises(frappe.PermissionError, overview, run)
-		self.assertFalse(frappe.has_permission(api.RUN, "read", run))
+		self.assertFalse(frappe.has_permission(constants.RUN, "read", run))
 		frappe.set_user(make_account("operator", operator=True))
 		self.assertTrue(overview(run)["publication"])
-		self.assertTrue(frappe.has_permission(api.RUN, "read", run))
+		self.assertTrue(frappe.has_permission(constants.RUN, "read", run))
 
 	def test_an_operator_cannot_write_a_run_by_hand(self):
 		"""The loader's own methods write a run; the Desk only reads it."""
 		run = make_run().name
 		frappe.set_user(make_account("operator", operator=True))
 		for right in ("write", "create", "delete"):
-			self.assertFalse(frappe.has_permission(api.RUN, right, run), right)
+			self.assertFalse(frappe.has_permission(constants.RUN, right, run), right)
 
 	def test_a_run_that_is_no_sealed_publication_has_no_overview(self):
 		run = make_run().name
-		frappe.db.set_value(api.RUN, run, "manifest_json", json.dumps({"profile": "earlier"}))
+		frappe.db.set_value(constants.RUN, run, "manifest_json", json.dumps({"profile": "earlier"}))
 		self.assertEqual(overview(run), {"publication": False})
 
 	def test_a_verified_set_based_run_waits_for_the_decision(self):

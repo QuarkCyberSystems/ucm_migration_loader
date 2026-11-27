@@ -8,13 +8,13 @@ import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import get_datetime
 
-from ucm_migration_loader import api, publication_jobs
+from ucm_migration_loader import constants, publication_jobs
 from ucm_migration_loader.tests.utils import REPORT, hidden_context, make_receipt, make_run
 from ucm_migration_loader.ucm_migration_loader import run_overview
 
 
 def column(run: str, field: str):
-	return frappe.db.get_value(api.RUN, run, field)
+	return frappe.db.get_value(constants.RUN, run, field)
 
 
 class TestRunSummary(IntegrationTestCase):
@@ -71,7 +71,7 @@ class TestRunSummary(IntegrationTestCase):
 	def test_routes_chosen_per_doctype_are_named_so(self):
 		run = make_run(state="Publication staged").name
 		plan = {"Person": "Document API", "Activity": "Validated bulk SQL"}
-		frappe.db.set_value(api.RUN, run, "write_plan_json", json.dumps(plan))
+		frappe.db.set_value(constants.RUN, run, "write_plan_json", json.dumps(plan))
 		run_overview.refresh(run)
 		self.assertEqual(column(run, "write_route"), "By DocType")
 
@@ -146,7 +146,7 @@ class TestStalledRun(IntegrationTestCase):
 		return make_run(state=state, worker_seen=seen, worker_phase="Writing Person", **values)
 
 	def shown(self, run) -> dict:
-		return run_overview.build(frappe.get_doc(api.RUN, run.name))
+		return run_overview.build(frappe.get_doc(constants.RUN, run.name))
 
 	def test_a_load_without_a_job_is_shown_as_stopped(self):
 		shown = self.shown(self.quiet(applied=1))

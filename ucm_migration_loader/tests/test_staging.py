@@ -10,7 +10,7 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from ucm_migration_loader import api, publication_receiver, publication_transport
+from ucm_migration_loader import api, constants, publication_receiver, publication_transport
 from ucm_migration_loader.tests.utils import (
 	hidden_context,
 	make_account,
@@ -49,7 +49,7 @@ class StagingCase(IntegrationTestCase):
 				ValueError, "Publication preflight failed", publication_receiver.stage, path, run
 			)
 		commit.assert_called_once()
-		return frappe.get_doc(api.RUN, run)
+		return frappe.get_doc(constants.RUN, run)
 
 
 class TestRefusal(StagingCase):
@@ -98,7 +98,7 @@ class TestRefusal(StagingCase):
 		self.assertIsNone(record.write_route)
 		self.assertIsNone(record.publication_stamp)
 		self.assertTrue(record.display_id.startswith("MIG-"))
-		self.assertEqual(frappe.db.count(api.BATCH, {"migration_run": run}), 0)
+		self.assertEqual(frappe.db.count(constants.BATCH, {"migration_run": run}), 0)
 
 	def test_the_form_shows_one_failed_step_with_what_differs(self):
 		path, run = self.sealed(versions={"ucm": "0.0.0-not-this-site"})
@@ -126,7 +126,7 @@ class TestRefusal(StagingCase):
 			self.addCleanup(remove_files, other)
 			result = publication_receiver.stage(str(other_path), other)
 		self.assertEqual(result["state"], "Publication staged")
-		self.assertEqual(frappe.db.get_value(api.RUN, run, "state"), "Rejected")
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "state"), "Rejected")
 
 	def test_the_same_file_is_checked_again_and_takes_over_the_refusal(self):
 		"""The site was behind the publication; once it is brought in line, the same file is staged, under the
@@ -136,7 +136,7 @@ class TestRefusal(StagingCase):
 		with patch.object(publication_receiver, "release_differences", return_value=behind):
 			number = self.refused(path, run).display_id
 		result = publication_receiver.stage(path, run)
-		record = frappe.get_doc(api.RUN, run)
+		record = frappe.get_doc(constants.RUN, run)
 		self.assertEqual((result["run"], record.state), (run, "Publication staged"))
 		self.assertEqual(record.display_id, number)
 		self.assertIsNone(record.finding)
@@ -151,7 +151,7 @@ class TestStaged(StagingCase):
 	def test_a_fitting_publication_is_staged_with_its_list_columns(self):
 		path, run = self.sealed()
 		result = publication_receiver.stage(path, run)
-		record = frappe.get_doc(api.RUN, run)
+		record = frappe.get_doc(constants.RUN, run)
 		self.assertEqual(result["state"], "Publication staged")
 		code = frappe.db.get_value("Context", self.context, "context_code")
 		self.assertEqual(record.delegation, f"Test {code[:-1] if code.endswith('0') else code} ({code})")
@@ -163,15 +163,15 @@ class TestStaged(StagingCase):
 	def test_staging_the_same_file_twice_returns_the_run(self):
 		path, run = self.sealed()
 		publication_receiver.stage(path, run)
-		modified = frappe.db.get_value(api.RUN, run, "modified")
+		modified = frappe.db.get_value(constants.RUN, run, "modified")
 		self.assertEqual(publication_receiver.stage(path, run)["state"], "Publication staged")
-		self.assertEqual(frappe.db.get_value(api.RUN, run, "modified"), modified)
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "modified"), modified)
 
 	def test_the_site_setting_chooses_the_route_of_a_staged_run(self):
 		path, run = self.sealed()
 		with patch.dict(frappe.conf, {"ucm_migration_route": "Set-based SQL"}):
 			publication_receiver.stage(path, run)
-		self.assertEqual(frappe.db.get_value(api.RUN, run, "write_route"), "Set-based SQL")
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "write_route"), "Set-based SQL")
 		steps = [step["step"] for step in overview(run)["steps"]]
 		self.assertEqual(steps, ["stage", "write", "derive", "verify", "activate"])
 
@@ -181,7 +181,7 @@ class TestStaged(StagingCase):
 		path, run = self.sealed()
 		publication_receiver.stage(path, run)
 		write_routes.select(run, "Set-based SQL")
-		self.assertEqual(frappe.db.get_value(api.RUN, run, "write_route"), "Set-based SQL")
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "write_route"), "Set-based SQL")
 
 
 class TestTransfer(StagingCase):
@@ -201,7 +201,7 @@ class TestTransfer(StagingCase):
 		self.send(path, run, publisher)
 		result = publication_transport.receive(run)
 		self.assertEqual(result["state"], "Publication staged")
-		self.assertEqual(frappe.db.get_value(api.RUN, run, "publishing_user"), publisher)
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "publishing_user"), publisher)
 
 		frappe.set_user(publisher)
 		self.assertEqual(api.status(run)["state"], "Publication staged")
@@ -211,7 +211,7 @@ class TestTransfer(StagingCase):
 		# and nothing else: the loader's commands and the run's form stay with the operators
 		for command in (api.apply, api.activate, api.discard, api.pause, overview):
 			self.assertRaises(frappe.PermissionError, command, run)
-		self.assertFalse(frappe.has_permission(api.RUN, "read", run))
+		self.assertFalse(frappe.has_permission(constants.RUN, "read", run))
 
 		frappe.set_user(other)
 		self.assertRaises(frappe.PermissionError, api.status, run)
@@ -225,7 +225,7 @@ class TestTransfer(StagingCase):
 		with patch.object(run_overview, "staged", wraps=run_overview.staged) as staged:
 			publication_transport.receive(run)
 		staged.assert_called_once()
-		record = frappe.get_doc(api.RUN, run)
+		record = frappe.get_doc(constants.RUN, run)
 		self.assertEqual(record.modified, record.creation)
 
 	def test_a_refused_transfer_names_no_sender(self):
@@ -236,8 +236,8 @@ class TestTransfer(StagingCase):
 			self.assertRaisesRegex(
 				ValueError, "Publication preflight failed", publication_transport.receive, run
 			)
-		self.assertEqual(frappe.db.get_value(api.RUN, run, "state"), "Rejected")
-		self.assertIsNone(frappe.db.get_value(api.RUN, run, "publishing_user"))
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "state"), "Rejected")
+		self.assertIsNone(frappe.db.get_value(constants.RUN, run, "publishing_user"))
 		frappe.set_user(publisher)
 		self.assertRaises(frappe.PermissionError, api.status, run)
 

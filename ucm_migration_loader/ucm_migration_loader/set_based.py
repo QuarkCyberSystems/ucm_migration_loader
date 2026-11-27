@@ -37,8 +37,18 @@ import frappe
 from frappe import _
 from frappe.utils import get_datetime, getdate, now_datetime
 
-from ucm_migration_loader import api, publication_index
-from ucm_migration_loader.application import check_closed, lock_run
+from ucm_migration_loader import constants, publication_index, runs
+from ucm_migration_loader.constants import (
+	APPLYING,
+	CLEANING,
+	DEFERRED,
+	DOCUMENT,
+	HIDDEN,
+	PAUSED,
+	READY,
+	SET_BASED,
+	STAGED,
+)
 from ucm_migration_loader.frozen import CHILDREN, LOOKUPS, ORDER, selection
 from ucm_migration_loader.publication_receiver import (
 	indexed_publication,
@@ -46,22 +56,12 @@ from ucm_migration_loader.publication_receiver import (
 	remove_after_discard,
 	schema_differences,
 )
+from ucm_migration_loader.runs import check_closed, lock_run
 
 from . import run_overview
 
-ROUTE = "Set-based SQL"
-DOCUMENT = "Document API"
 # Their rules read clearances, consent and other delegations: written through the documents on every route
 THROUGH_DOCUMENTS = frozenset(("Record Tag",))
-DEFERRED = ("ToDo", "Record Share")  # released at activation
-STAGED, APPLYING, PAUSED, READY, CLEANING = (
-	"Publication staged",
-	"Publication applying",
-	"Publication paused",
-	"Publication ready",
-	"Publication cleaning",
-)
-HIDDEN = (STAGED, APPLYING, PAUSED, READY, CLEANING)
 INSERT_ROWS = 500  # rows per INSERT statement
 COMMIT_ROWS = 5000  # parent rows per transaction: small enough for the replicas to follow
 DELETE_ROWS = 5000
@@ -323,7 +323,7 @@ def _receipts(record, group: list, doctype: str, route: str, seconds: float = 0)
 		"write_seconds",
 	]
 	frappe.db.bulk_insert(
-		api.BATCH,
+		constants.BATCH,
 		fields,
 		(
 			(
@@ -373,12 +373,12 @@ def _groups(batches):
 def _progress(record) -> dict:
 	"""What the steps after the last write have done, kept on the run between jobs."""
 	progress = json.loads(record.get("reconcile_counts") or "{}")
-	return progress if progress.get("route") == ROUTE else {"route": ROUTE}
+	return progress if progress.get("route") == SET_BASED else {"route": SET_BASED}
 
 
 def _mark(run: str, phase: str, **values) -> None:
 	"""Show on the run what its worker is doing. The phase is stored in English and translated on the form."""
-	frappe.db.set_value(api.RUN, run, {"worker_phase": phase, "worker_seen": now_datetime(), **values})
+	frappe.db.set_value(constants.RUN, run, {"worker_phase": phase, "worker_seen": now_datetime(), **values})
 
 
 def _mine(record, ticket: int | None) -> bool:
@@ -436,7 +436,7 @@ def _write(
 					for table, table_rows in rows.items():
 						_insert(table, table_rows)
 						written[table] += len(table_rows)
-				route = ROUTE
+				route = SET_BASED
 			_receipts(record, group, doctype, route, monotonic() - step)
 			sealed.unchanged()
 			_mark(run, "Writing " + doctype, state=APPLYING, applied=group[-1][0], finding=None)
@@ -457,17 +457,17 @@ def _take_route(run: str) -> None:
 	staged run is given the route; a run already started on another route is refused."""
 	from ucm_migration_loader import write_routes
 
-	record = api._record(run)
+	record = runs.record(run)
 	if write_routes.set_based(json.loads(record.write_plan_json or "{}")):
 		return
 	if not write_routes.editable(record):
 		raise ValueError(_("This run was started on another write route"))
-	write_routes.select(run, ROUTE)
+	write_routes.select(run, SET_BASED)
 
 
 def apply(run: str, stop_at: int | None = None) -> dict:
 	"""Write the business batches not yet applied, all of them or up to `stop_at`, in one call from the bench."""
-	api._operator()
+	runs.only_admin()
 	_take_route(run)
 	started = monotonic()
 	with _publication(run) as sealed:
@@ -475,7 +475,7 @@ def apply(run: str, stop_at: int | None = None) -> dict:
 		last = _business_batches(sealed.db)
 		out = _write(run, sealed, last if stop_at is None else min(last, stop_at))
 	return {
-		**api._result(api._record(run)),
+		**runs.result(runs.record(run)),
 		"rows_written": out["rows_written"],
 		"seconds": {"open the sealed file": round(opened, 2), **out["seconds"]},
 		"total_seconds": round(monotonic() - started, 2),
@@ -588,7 +588,7 @@ def _derive_step(run: str, *, ticket: int | None = None) -> dict | None:
 	if not _mine(record, ticket):
 		frappe.db.rollback()
 		return None
-	progress = {"route": ROUTE, "derived": changed, "derive_seconds": seconds}
+	progress = {"route": SET_BASED, "derived": changed, "derive_seconds": seconds}
 	_mark(run, "Deriving", reconcile_cursor=0, reconcile_counts=json.dumps(progress))
 	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the end of a step, so that the next job starts at the verification
 	frappe.db.commit()
@@ -597,7 +597,7 @@ def _derive_step(run: str, *, ticket: int | None = None) -> dict | None:
 
 def derive(run: str) -> dict:
 	"""Derive the values of an applying run's delegation, in one call from the bench."""
-	api._operator()
+	runs.only_admin()
 	_ctx, record = lock_run(run)
 	if record.state != APPLYING:
 		raise ValueError(_("Derive follows the last business batch of an applying run"))
@@ -980,7 +980,7 @@ def _conclude(run: str, sealed: _Sealed, last: int, *, ticket: int | None = None
 	}
 	findings = {kind: found for kind, found in findings.items() if found}
 	report = {
-		"route": ROUTE,
+		"route": SET_BASED,
 		"context": context,
 		"published_rows": manifest["counts"],
 		"stored_rows": counted,
@@ -1009,7 +1009,7 @@ def _conclude(run: str, sealed: _Sealed, last: int, *, ticket: int | None = None
 			reconciliation_json=json.dumps(report),
 			finding=_("Verification found: {0}").format(", ".join(findings)),
 			reconcile_cursor=0,
-			reconcile_counts=json.dumps({"route": ROUTE}),
+			reconcile_counts=json.dumps({"route": SET_BASED}),
 		)
 	else:
 		_mark(run, "Ready for activation", state=READY, reconciliation_json=json.dumps(report), finding=None)
@@ -1022,14 +1022,14 @@ def _conclude(run: str, sealed: _Sealed, last: int, *, ticket: int | None = None
 def verify(run: str, sample_every: int = SAMPLE_EVERY) -> dict:
 	"""Check a derived load from its first batch on, in one call from the bench, and when nothing is found make
 	the run ready for the go-live decision. The report is kept on the run either way."""
-	api._operator()
+	runs.only_admin()
 	started = monotonic()
 	with _publication(run) as sealed:
 		last = _business_batches(sealed.db)
 		_ctx, record = lock_run(run)
 		if record.state != APPLYING or (record.applied or 0) != last:
 			raise ValueError(_("Verify follows the last business batch of an applying run"))
-		frappe.db.set_value(api.RUN, run, "reconcile_cursor", 0)
+		frappe.db.set_value(constants.RUN, run, "reconcile_cursor", 0)
 		# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the verification starts again from the first batch
 		frappe.db.commit()
 		_check(run, sealed, last, sample_every=sample_every)
@@ -1068,7 +1068,7 @@ def advance(
 	"""Take a load on from where the last call left it: the batches not yet written, then the derived values,
 	then the verification. A queued job passes its ticket and a `budget` in seconds, takes one step and is
 	followed by another job while `more` is returned; without a budget the call runs to the end."""
-	api._operator()
+	runs.only_admin()
 	deadline, steps, more = None if budget is None else monotonic() + budget, {}, False
 	with _publication(run) as sealed:
 		last = _business_batches(sealed.db)
@@ -1085,7 +1085,7 @@ def advance(
 			if budget is not None:
 				more = _next_step(run, last, stop_at, ticket) is not None
 				break
-	return {**api._result(api._record(run)), "steps": steps, "more": more}
+	return {**runs.result(runs.record(run)), "steps": steps, "more": more}
 
 
 def job(run: str, action: str, ticket: int, stop_at: int | None = None) -> bool:
@@ -1114,7 +1114,7 @@ def activate(run: str, commit: bool = True) -> dict:
 	from ucm_migration_loader import publication_worker as documents
 	from ucm_migration_loader.publication_shares import check_share
 
-	api._operator()
+	runs.only_admin()
 	started = monotonic()
 	with documents.current_reads(), _publication(run) as sealed:
 		try:
@@ -1123,7 +1123,7 @@ def activate(run: str, commit: bool = True) -> dict:
 			ctx, record = lock_run(run)
 			_same_target(manifest, ctx, record)
 			report = json.loads(record.reconciliation_json or "{}")
-			if record.state != READY or report.get("route") != ROUTE or report.get("findings"):
+			if record.state != READY or report.get("route") != SET_BASED or report.get("findings"):
 				raise ValueError(_("Activation follows a verification that found nothing"))
 			check_closed(ctx)
 			documents.verify_sensitive_policy(manifest)
@@ -1167,9 +1167,9 @@ def activate(run: str, commit: bool = True) -> dict:
 			)
 			sealed.unchanged()
 			_mark(run, "Activated", applied=manifest["batches"], reconciliation_json=json.dumps(report))
-			api.mark_activated(run)
+			runs.mark_activated(run)
 			result = {
-				**api._result(api._record(run)),
+				**runs.result(runs.record(run)),
 				"released_access_rows": report["released_access_rows"],
 				"shares_held_at_activation": held,
 				"inbound_share_outcomes": report["inbound_share_outcomes"],
@@ -1246,14 +1246,16 @@ def discard(run: str, *, ticket: int | None = None, budget: float | None = None)
 	"""Remove a hidden run's rows and keep its receipts. A replacement publication takes a new snapshot identity.
 	A queued job passes its ticket and a `budget` in seconds, and is followed by another job while the run stays
 	cleaning; without them the call marks the run itself and removes everything."""
-	api._operator()
+	runs.only_admin()
 	started = monotonic()
 	ctx, record = lock_run(run)
 	if ticket is None:
 		if record.state not in HIDDEN:
 			raise ValueError(_("Only a hidden full publication can be discarded"))
 		frappe.db.set_value(
-			api.RUN, run, {"state": CLEANING, "dispatch_id": (record.dispatch_id or 0) + 1, "finding": None}
+			constants.RUN,
+			run,
+			{"state": CLEANING, "dispatch_id": (record.dispatch_id or 0) + 1, "finding": None},
 		)
 	elif record.state != CLEANING or record.dispatch_id != ticket:
 		frappe.db.rollback()
@@ -1274,9 +1276,9 @@ def discard(run: str, *, ticket: int | None = None, budget: float | None = None)
 	if record.state != CLEANING or (ticket is not None and record.dispatch_id != ticket):
 		frappe.db.rollback()
 		return {**out, "state": record.state}
-	_mark(run, "Discarded", state="Discarded", applied=0, reconcile_cursor=0)
+	_mark(run, "Discarded", state=constants.DISCARDED, applied=0, reconcile_cursor=0)
 	remove_after_discard(record)
 	run_overview.refresh(run)
 	# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the end of a discard run from the bench or a worker
 	frappe.db.commit()
-	return {**out, "state": "Discarded", "seconds": round(monotonic() - started, 2)}
+	return {**out, "state": constants.DISCARDED, "seconds": round(monotonic() - started, 2)}

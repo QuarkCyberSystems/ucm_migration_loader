@@ -142,7 +142,7 @@ def ready(queue: Queue, run: str) -> dict:
 	current = record(run)
 	report = json.loads(current.reconciliation_json)
 	assert current.state == "Publication ready" and not report["findings"], report["findings"]
-	assert report["route"] == set_based.ROUTE and current.reconcile_cursor == current.applied
+	assert report["route"] == set_based.SET_BASED and current.reconcile_cursor == current.applied
 	business = sum(n for doctype, n in report["published_rows"].items() if doctype not in set_based.DEFERRED)
 	assert sum(report["rows_compared"].values()) == business
 	return {

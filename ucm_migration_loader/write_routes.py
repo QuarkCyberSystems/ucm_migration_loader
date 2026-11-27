@@ -4,14 +4,9 @@ import json
 
 import frappe
 
-from . import api
+from . import constants, runs
+from .constants import DOCUMENT, ROUTES, SET_BASED, SQL
 from .frozen import ORDER
-
-DOCUMENT = "Document API"
-SQL = "Validated bulk SQL"
-# Writes, derives and verifies a delegation in sets: a route for the whole run, never for some DocTypes of it.
-SET_BASED = "Set-based SQL"
-ROUTES = (DOCUMENT, SQL, SET_BASED)
 
 
 def parent_types(manifest):
@@ -47,13 +42,13 @@ def default_plan(manifest):
 
 
 def editable(record):
-	return record.state == "Publication staged" and not record.applied and not record.dispatch_id
+	return record.state == constants.STAGED and not record.applied and not record.dispatch_id
 
 
 @frappe.whitelist(methods=["POST"])
 def options(run: str):
-	api._operator()
-	record = api._record(run)
+	runs.only_admin()
+	record = runs.record(run)
 	if not editable(record):
 		raise ValueError("Write routes are locked once apply starts")
 	plan = json.loads(record.write_plan_json or "{}")
@@ -69,8 +64,8 @@ def options(run: str):
 
 @frappe.whitelist(methods=["POST"])
 def configure(run: str, routes: dict | str):
-	api._operator()
-	record = api._record(run)
+	runs.only_admin()
+	record = runs.record(run)
 	if not editable(record):
 		raise ValueError("Write routes are locked once apply starts")
 	if isinstance(routes, str):
@@ -92,6 +87,6 @@ def select(run: str, route: str):
 	"""Choose one route for every published DocType of a staged run."""
 	if route not in ROUTES:
 		raise ValueError("Unknown write route")
-	record = api._record(run)
+	record = runs.record(run)
 	configure(run, dict.fromkeys(parent_types(json.loads(record.manifest_json)), route))
 	return {"run": run, "route": route}

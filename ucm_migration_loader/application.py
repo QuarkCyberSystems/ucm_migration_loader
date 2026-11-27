@@ -4,23 +4,10 @@ on the context and on shares."""
 import frappe
 from frappe import _
 
-from . import api
+from . import constants, runs
 
 # the DocTypes whose shares are held back while their delegation is loading
 SHARED = ("Person", "Case", "Case Member", "Person Consent", "Activity")
-HIDDEN = (
-	"Publication staged",
-	"Publication applying",
-	"Publication cleaning",
-	"Publication paused",
-	"Publication ready",
-)
-
-
-def lock_run(run):
-	context = frappe.db.get_value(api.RUN, run, "context_id")
-	ctx = frappe.get_doc("Context", context, for_update=True)
-	return ctx, api._record(run)
 
 
 def guard_context(doc, method=None):
@@ -49,18 +36,9 @@ def guard_share(doc, method=None):
 def refuse_if_applying(context):
 	frappe.db.get_value("Context", context, "name", for_update=True)
 	if frappe.db.get_value(
-		api.RUN,
-		{"context_id": context, "state": ["in", HIDDEN]},
+		constants.RUN,
+		{"context_id": context, "state": ["in", constants.HIDDEN]},
 		"name",
 		for_update=True,
 	):
 		frappe.throw(_("This migration is applying hidden batches. Activate or discard its run first."))
-
-
-def check_closed(ctx):
-	if ctx.context_status != "Locked" or ctx.context_discoverability != "Hidden":
-		raise ValueError("Application requires a locked, hidden migration context")
-	if not frappe.db.get_single_value("System Settings", "disable_document_sharing"):
-		raise ValueError("Enable the UCM setting that disables Frappe document sharing")
-	if frappe.db.exists("Record Share", {"context_tech_id": ctx.name}):
-		raise ValueError("A share exists for the incoming context")

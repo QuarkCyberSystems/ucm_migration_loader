@@ -6,14 +6,10 @@ from time import monotonic
 import frappe
 from frappe.utils import now_datetime
 
-from . import api, write_routes
-from .application import check_closed, lock_run
+from . import constants, runs, write_routes
+from .constants import APPLYING, CLEANING, PAUSED, READY, STAGED
+from .runs import check_closed, lock_run
 
-STAGED = "Publication staged"
-APPLYING = "Publication applying"
-PAUSED = "Publication paused"
-READY = "Publication ready"
-CLEANING = "Publication cleaning"
 BATCHES_PER_JOB = 25
 # A job starts no batch after this many seconds: a batch of a thousand records with pictures takes
 # close to a minute, and 25 of them do not fit the queue's timeout.
@@ -22,25 +18,25 @@ JOB_SECONDS = 120
 
 def set_based(run):
 	"""Whether the run's plan is the set-based route, whose steps the queue runs in place of the batches."""
-	plan = frappe.db.get_value(api.RUN, run, "write_plan_json")
+	plan = frappe.db.get_value(constants.RUN, run, "write_plan_json")
 	return write_routes.set_based(json.loads(plan or "{}"))
 
 
 def request(run, action, max_batches=None):
-	api._operator()
+	runs.only_admin()
 	# a proposal may be for a delegation the site has no context for yet: it is declined before any context
 	# is looked for
-	waiting = frappe.db.get_value(api.RUN, run, "state", for_update=True)
-	if action == "discard" and waiting in (api.AWAITING, api.PROPOSED):
+	waiting = frappe.db.get_value(constants.RUN, run, "state", for_update=True)
+	if action == "discard" and waiting in (constants.AWAITING, constants.PROPOSED):
 		return _withdraw(run)
 	ctx, record = lock_run(run)
-	if action == "discard" and record.state == "Discarded":
+	if action == "discard" and record.state == constants.DISCARDED:
 		from .publication_receiver import remove_after_discard
 
 		remove_after_discard(record)
-		return api._result(record)
-	if action == "activate" and record.state == "Activated":
-		return api._result(record)
+		return runs.result(record)
+	if action == "activate" and record.state == constants.ACTIVATED:
+		return runs.result(record)
 	if max_batches is not None and max_batches < 1:
 		raise ValueError("Select a positive batch limit")
 	allowed = {
@@ -59,7 +55,7 @@ def request(run, action, max_batches=None):
 		"discard": CLEANING,
 	}[action]
 	ticket = (record.dispatch_id or 0) + 1
-	frappe.db.set_value(api.RUN, run, {"state": next_state, "dispatch_id": ticket, "finding": None})
+	frappe.db.set_value(constants.RUN, run, {"state": next_state, "dispatch_id": ticket, "finding": None})
 	if action != "pause":
 		limit = max_batches or record.received + 1
 		cursor = record.applied or 0
@@ -82,10 +78,10 @@ def _withdraw(run):
 	from .ucm_migration_loader import run_overview
 
 	inbox = folder(run)
-	frappe.db.set_value(api.RUN, run, {"state": "Discarded", "finding": None})
+	frappe.db.set_value(constants.RUN, run, {"state": constants.DISCARDED, "finding": None})
 	run_overview.refresh(run)
 	frappe.db.after_commit.add(lambda: shutil.rmtree(inbox, ignore_errors=True))
-	return {"run": run, "state": "Discarded", "requested": "discard", "applied": 0}
+	return {"run": run, "state": constants.DISCARDED, "requested": "discard", "applied": 0}
 
 
 def enqueue(run, action, ticket, max_batches, stop_at):
@@ -96,7 +92,7 @@ def enqueue(run, action, ticket, max_batches, stop_at):
 
 	frappe.enqueue(
 		"ucm_migration_loader.publication_jobs.execute",
-		queue=api.QUEUE,
+		queue=constants.QUEUE,
 		timeout=timeout,
 		run=run,
 		action=action,
@@ -144,7 +140,7 @@ def _roll_back() -> None:
 
 
 def execute(run, action, ticket, max_batches, stop_at=None):
-	api._operator()
+	runs.only_admin()
 	started, worked = monotonic(), False
 	try:
 		worked = _execute(run, action, ticket, max_batches, stop_at)
@@ -209,6 +205,6 @@ def _execute(run, action, ticket, max_batches, stop_at):
 			}
 			if action == "apply" and record.state == APPLYING:
 				update["state"] = PAUSED
-			frappe.db.set_value(api.RUN, run, update)
+			frappe.db.set_value(constants.RUN, run, update)
 			frappe.db.commit()
 		raise

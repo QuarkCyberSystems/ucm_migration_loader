@@ -12,15 +12,16 @@ from frappe.utils import get_datetime, getdate, now_datetime
 
 from . import (
 	api,
+	constants,
 	held_shares,
 	migration_load,
 	publication_index,
 	release_checkpoint,
+	runs,
 	sql_writer,
 	write_routes,
 )
 from .activities import insert_activity
-from .application import check_closed, lock_run
 from .batch_metrics import collect, measure
 from .dictionary_identity import resolve_term
 from .frozen import (
@@ -39,6 +40,7 @@ from .publication_receiver import (
 	schema_differences,
 )
 from .publication_shares import check_share
+from .runs import check_closed, lock_run
 from .stored_rows import business, checked_row, insert_document
 
 
@@ -177,7 +179,7 @@ def insert_tag(row, context, insert=insert_document):
 @measure("validation")
 def prepare_item_rows(db, cache, context, item):
 	dt = item["doctype"]
-	if dt not in ORDER or dt in ("ToDo", "Record Share"):
+	if dt not in ORDER or dt in constants.DEFERRED:
 		raise ValueError("Unsupported business batch")
 	raw = item["row"]
 	if raw["context_tech_id"] != context:
@@ -305,7 +307,7 @@ def insert_batch(db, context, items, sequence, *, insert=insert_document):
 def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadline=None):
 	"""Commit business batches one transaction each, then reconcile. A queued job passes a
 	monotonic `deadline`: no batch is started after it, and the next job continues."""
-	api._operator()
+	runs.only_admin()
 	if int(max_batches) < 1:
 		raise ValueError("Select a positive batch limit")
 	_, initial = lock_run(run)
@@ -320,31 +322,31 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadline
 			try:
 				ctx, record = lock_run(run)
 				if ticket is not None and record.dispatch_id != ticket:
-					return api._result(record)
+					return runs.result(record)
 				if stop_at is not None and (record.applied or 0) >= stop_at:
-					return api._result(record)
+					return runs.result(record)
 				if deadline is not None and monotonic() > deadline:
-					return api._result(record)
+					return runs.result(record)
 				if (manifest["site"], manifest["context"], manifest) != (
 					frappe.local.site,
 					ctx.name,
 					json.loads(record.manifest_json),
 				):
 					raise ValueError("Staged publication target differs")
-				if record.state == "Publication ready":
+				if record.state == constants.READY:
 					return {
-						**api._result(record),
+						**runs.result(record),
 						"pending_activation_from_batch": (record.applied or 0) + 1,
 					}
 				if record.state not in (
-					"Publication staged",
-					"Publication applying",
+					constants.STAGED,
+					constants.APPLYING,
 				):
 					raise ValueError("Run cannot apply a business batch")
 				if reason := migration_load.pressure():
 					record.update(
 						{
-							"state": "Publication paused",
+							"state": constants.PAUSED,
 							"finding": reason,
 							"worker_phase": "Paused for live load",
 							"worker_seen": now_datetime(),
@@ -352,7 +354,7 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadline
 					)
 					record.save(ignore_permissions=True)
 					frappe.db.commit()
-					return api._result(record)
+					return runs.result(record)
 				publication_index.check_identity(path, stamp)
 				started = monotonic()
 				check_closed(ctx)
@@ -364,22 +366,22 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadline
 				sequence = int(record.applied or 0) + 1
 				data = publication_index.read_batch(db, hashes, sequence, manifest["batches"])
 				items = json.loads(data[1]) if data else []
-				if not items or items[0]["doctype"] in ("ToDo", "Record Share"):
+				if not items or items[0]["doctype"] in constants.DEFERRED:
 					complete = reconcile_business(db, ctx, record, manifest, checkpoint=True)
 					publication_index.check_identity(path, stamp)
 					if not complete:
-						record.state = "Publication applying"
+						record.state = constants.APPLYING
 						record.save(ignore_permissions=True)
 						frappe.db.commit()
 						if ticket is not None:
-							return api._result(record)
+							return runs.result(record)
 						continue
-					record.state = "Publication ready"
+					record.state = constants.READY
 					record.worker_phase = "Ready for activation"
 					record.save(ignore_permissions=True)
 					frappe.db.commit()
 					return {
-						**api._result(record),
+						**runs.result(record),
 						"pending_activation_from_batch": sequence,
 					}
 				sha = data[0]
@@ -396,7 +398,7 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadline
 				publication_index.check_identity(path, stamp)
 				frappe.get_doc(
 					{
-						"doctype": api.BATCH,
+						"doctype": constants.BATCH,
 						"migration_run": run,
 						"sequence_number": sequence,
 						"write_route": route,
@@ -416,7 +418,7 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadline
 				remaining -= 1
 				record.update(
 					{
-						"state": "Publication applying",
+						"state": constants.APPLYING,
 						"applied": sequence,
 						"worker_phase": "Writing " + dt,
 						"worker_seen": now_datetime(),
@@ -427,7 +429,7 @@ def apply(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadline
 			except Exception:
 				frappe.db.rollback()
 				raise
-		return api._result(record)
+		return runs.result(record)
 
 
 def audit_values(raw):
@@ -596,7 +598,7 @@ def reconcile_business(db, ctx, record, manifest, *, checkpoint=False):
 				f"select count(*) from `tab{dt}` r {where}",
 				(ctx.name,) * where.count("%s"),
 			)[0][0]
-			expected = 0 if dt in ("ToDo", "Record Share") else manifest["counts"][dt]
+			expected = 0 if dt in constants.DEFERRED else manifest["counts"][dt]
 			if count != expected:
 				raise ValueError(f"Stored {dt} inventory differs before activation")
 	checked = Counter(dict.fromkeys(manifest["counts"], 0))
@@ -613,7 +615,7 @@ def reconcile_business(db, ctx, record, manifest, *, checkpoint=False):
 		(cursor, boundary),
 	):
 		started = monotonic()
-		receipt = frappe.get_doc(api.BATCH, f"{record.name}-{seq}", for_update=True)
+		receipt = frappe.get_doc(constants.BATCH, f"{record.name}-{seq}", for_update=True)
 		if (receipt.migration_run, receipt.sequence_number, receipt.digest) != (
 			record.name,
 			seq,
@@ -643,7 +645,7 @@ def reconcile_business(db, ctx, record, manifest, *, checkpoint=False):
 				raise
 		if checkpoint:
 			frappe.db.set_value(
-				api.BATCH,
+				constants.BATCH,
 				receipt.name,
 				{
 					"reconcile_seconds": monotonic() - started,
@@ -664,7 +666,7 @@ def reconcile_business(db, ctx, record, manifest, *, checkpoint=False):
 		)
 		if boundary < record.applied:
 			return False
-	deferred = {dt: manifest["counts"][dt] for dt in ("ToDo", "Record Share")}
+	deferred = {dt: manifest["counts"][dt] for dt in constants.DEFERRED}
 	if any(checked[dt] + deferred.get(dt, 0) != count for dt, count in manifest["counts"].items()):
 		raise ValueError("Verified rows and deferred access rows differ from the manifest")
 	access = Counter()
@@ -717,7 +719,7 @@ def current_reads():
 
 
 def activate(run: str):
-	api._operator()
+	runs.only_admin()
 	with current_reads():
 		return _activate(run)
 
@@ -738,9 +740,9 @@ def _activate(run):
 				json.loads(record.manifest_json),
 			):
 				raise ValueError("Staged publication target differs")
-			if record.state == "Activated":
-				return api._result(record)
-			if record.state not in ("Publication ready", "Publication applying"):
+			if record.state == constants.ACTIVATED:
+				return runs.result(record)
+			if record.state not in (constants.READY, constants.APPLYING):
 				raise ValueError("Run has no committed business batches")
 			check_closed(ctx)
 			reconcile_business(db, ctx, record, manifest)
@@ -771,7 +773,7 @@ def _activate(run):
 						raise
 				frappe.get_doc(
 					{
-						"doctype": api.BATCH,
+						"doctype": constants.BATCH,
 						"migration_run": run,
 						"sequence_number": seq,
 						"write_route": route,
@@ -791,7 +793,7 @@ def _activate(run):
 				raise ValueError("Release receipts differ from the deferred access inventory")
 			report["released_access_rows"] = dict(released)
 			frappe.db.set_value(
-				api.RUN,
+				constants.RUN,
 				run,
 				{
 					"applied": manifest["batches"],
@@ -801,8 +803,8 @@ def _activate(run):
 				},
 			)
 			publication_index.check_identity(path, stamp)
-			api.mark_activated(run)
-			result = api._result(api._record(run))
+			runs.mark_activated(run)
+			result = runs.result(runs.record(run))
 			# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the activation is one transaction of the queued job, which ends here
 			frappe.db.commit()
 			return result

@@ -13,7 +13,9 @@ SYSTEM = {"owner", "modified_by", "creation", "modified", "idx", "docstatus"}
 def apply_catalogs(source, *, catalogs=CATALOGS, context=None):
 	import frappe
 
-	frappe.only_for("Migration Admin")
+	from .runs import only_admin
+
+	only_admin()
 	if context is not None:
 		check_uuid(context)
 		with source.cursor() as cur:
@@ -91,7 +93,7 @@ def apply_catalogs(source, *, catalogs=CATALOGS, context=None):
 			stored = frappe.db.get_value(dt, name, fields, as_dict=True, for_update=True)
 			if stored is None:
 				if dt == "Context Profile Exemption":
-					from .application import check_closed
+					from .runs import check_closed
 
 					check_closed(frappe.get_doc("Context", row["context_tech_id"], for_update=True))
 				frappe.get_doc({"doctype": dt, **row}).insert(set_name=name)
