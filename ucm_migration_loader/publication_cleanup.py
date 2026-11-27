@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from time import monotonic
 
 import frappe
 
@@ -120,7 +121,9 @@ def remove_item(db, context, item):
     delete_record(dt, raw["name"])
 
 
-def discard(run: str, max_batches: int = 1, *, ticket=None, stop_at=None):
+def discard(run: str, max_batches: int = 1, *, ticket=None, stop_at=None, deadline=None):
+    """Remove committed batches in reverse, one transaction each. A queued job passes a
+    monotonic `deadline`: no batch is started after it, and the next job continues."""
     api._operator()
     if int(max_batches) < 1:
         raise ValueError("Select a positive batch limit")
@@ -149,6 +152,8 @@ def discard(run: str, max_batches: int = 1, *, ticket=None, stop_at=None):
                 if ticket is not None and record.dispatch_id != ticket:
                     return api._result(record)
                 if stop_at is not None and record.applied and record.applied <= stop_at:
+                    return api._result(record)
+                if deadline is not None and monotonic() > deadline:
                     return api._result(record)
                 if record.state == "Discarded":
                     return api._result(record)

@@ -1,6 +1,7 @@
 """Run Desk and CLI commands for sealed publications on the migration queue."""
 
 import json
+from time import monotonic
 
 import frappe
 from frappe.utils import now_datetime
@@ -15,6 +16,9 @@ PAUSED = "Publication paused"
 READY = "Publication ready"
 CLEANING = "Publication cleaning"
 BATCHES_PER_JOB = 25
+# A job starts no batch after this many seconds: a batch of a thousand records with pictures takes
+# close to a minute, and 25 of them do not fit the queue's timeout.
+JOB_SECONDS = 120
 
 
 def set_based(run):
@@ -129,18 +133,19 @@ def execute(run, action, ticket, max_batches, stop_at=None):
                 else cursor + max_batches
             )
         limit = min(max_batches, BATCHES_PER_JOB)
+        deadline = monotonic() + JOB_SECONDS
         if action == "discard":
             if record.state != CLEANING:
                 return
             result = publication_cleanup.discard(
-                run, limit, ticket=ticket, stop_at=stop_at
+                run, limit, ticket=ticket, stop_at=stop_at, deadline=deadline
             )
             more = result["state"] == CLEANING and result["applied"] > stop_at
         elif action == "apply":
             if record.state != APPLYING:
                 return
             result = publication_worker.apply(
-                run, limit, ticket=ticket, stop_at=stop_at
+                run, limit, ticket=ticket, stop_at=stop_at, deadline=deadline
             )
             more = result["state"] == APPLYING and result["applied"] < stop_at
         else:
