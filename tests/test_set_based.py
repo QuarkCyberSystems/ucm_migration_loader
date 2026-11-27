@@ -146,3 +146,47 @@ def test_values_that_are_the_same(stored, published):
 )
 def test_values_that_differ(stored, published):
 	assert not set_based._equal(stored, published)
+
+
+def test_rows_are_written_on_a_ucm_without_record_counts(monkeypatch):
+	"""UCM's home counts are a feature of some UCM versions: without the module there is nothing to move."""
+	import builtins
+
+	real = builtins.__import__
+
+	def without_counts(name, globals=None, locals=None, fromlist=(), level=0):
+		if name == "ucm.permissions" and "counts" in (fromlist or ()):
+			raise ImportError("cannot import name 'counts'")
+		return real(name, globals, locals, fromlist, level)
+
+	monkeypatch.setattr(builtins, "__import__", without_counts)
+	done = []
+	with set_based._counts_moving("Person", ("a", "b")):
+		done.append("written")
+	assert done == ["written"]
+
+
+def test_record_counts_move_around_the_rows_where_ucm_keeps_them(monkeypatch):
+	import sys
+	import types
+	from contextlib import contextmanager
+
+	seen = []
+
+	@contextmanager
+	def moving(doctype, where, values):
+		seen.append(("before", doctype, where, values))
+		yield
+		seen.append(("after", doctype))
+
+	package = types.ModuleType("ucm.permissions")
+	package.counts = types.SimpleNamespace(moving=moving)
+	monkeypatch.setitem(sys.modules, "ucm", types.ModuleType("ucm"))
+	monkeypatch.setitem(sys.modules, "ucm.permissions", package)
+	with set_based._counts_moving("Activity", ("a",)):
+		seen.append("written")
+	assert seen == [
+		("before", "Activity", "x.name in %(names)s", {"names": ("a",)}),
+		"written",
+		("after", "Activity"),
+	]

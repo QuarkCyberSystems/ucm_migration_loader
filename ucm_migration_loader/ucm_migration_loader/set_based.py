@@ -115,6 +115,19 @@ def _same_target(manifest: dict, ctx, record) -> None:
 		raise ValueError(_("Staged publication target differs"))
 
 
+@contextmanager
+def _counts_moving(doctype: str, names: tuple):
+	"""Around rows written or removed by SQL: the record counts of UCM's home move with them, in the same
+	transaction, on a UCM that keeps such counts (ucm.permissions.counts). A UCM without them has none to move."""
+	try:
+		from ucm.permissions import counts
+	except ImportError:
+		yield
+		return
+	with counts.moving(doctype, "x.name in %(names)s", {"names": names}):
+		yield
+
+
 def _business_batches(db) -> int:
 	"""The number of the last batch that is not an assignment or a share: those close the publication."""
 	for sequence, payload in db.execute("select sequence, payload from batches order by sequence desc"):
@@ -379,8 +392,6 @@ def _write(
 	"""Write the business batches not yet applied, up to one of them, from the last committed one on. Each group
 	of batches, its receipts and the run's cursor commit together, so an interrupted write resumes where it
 	stopped."""
-	from ucm.permissions import counts
-
 	from ucm_migration_loader import migration_load
 	from ucm_migration_loader import publication_worker as documents
 	from ucm_migration_loader.publication_prerequisites import verify_links
@@ -421,8 +432,7 @@ def _write(
 				rows = _group_rows(sealed.db, cache, ctx.name, doctype, group)
 				seconds["of which reading the file and preparing rows"] += monotonic() - step
 				names = tuple(row["name"] for row in rows[doctype])
-				# the counts of the home move with the records, in the same transaction (ucm.permissions.counts)
-				with counts.moving(doctype, "x.name in %(names)s", {"names": names}):
+				with _counts_moving(doctype, names):
 					for table, table_rows in rows.items():
 						_insert(table, table_rows)
 						written[table] += len(table_rows)
@@ -1166,8 +1176,6 @@ def _delete(context: str, keep_files: bool = False, deadline: float | None = Non
 	others first, by primary key, DELETE_ROWS at a time with a commit after each. Pictures no remaining File row
 	names are removed from the disk afterwards. Returns the rows removed per table, and whether none is left:
 	past the deadline the rest waits for the next call."""
-	from ucm.permissions import counts
-
 	removed, urls, finished = Counter(), set(), True
 	tables = []
 	for doctype in reversed(ORDER):
@@ -1188,7 +1196,7 @@ def _delete(context: str, keep_files: bool = False, deadline: float | None = Non
 				urls.update(
 					frappe.db.sql_list("select file_url from `tabFile` where name in %s", (tuple(names),))
 				)
-			with counts.moving(doctype, "x.name in %(names)s", {"names": tuple(names)}):
+			with _counts_moving(doctype, tuple(names)):
 				# nosemgrep: frappe-semgrep-rules.rules.security.frappe-sql-format-injection -- reviewed: the table is a DocType of the publication profile; the names are a parameter
 				frappe.db.sql(f"delete from `tab{doctype}` where name in %s", (tuple(names),))
 			removed[doctype] += len(names)
