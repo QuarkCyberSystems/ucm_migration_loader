@@ -49,7 +49,6 @@ def exercise(source, site, work):
 				"Case",
 				"Organization",
 				"Sensitive Information",
-				"UCM Migration Run",
 				"UCM Migration Batch",
 			)
 		}
@@ -61,7 +60,8 @@ def exercise(source, site, work):
 		else:
 			raise AssertionError("Overlapping published identities reached staging")
 		frappe.db.rollback()
-		assert not frappe.db.exists("UCM Migration Run", run)
+		# the refusal is kept as a run the migration team can open; nothing else is written
+		assert frappe.db.get_value("UCM Migration Run", run, "state") == "Rejected"
 		assert before == {dt: frappe.db.count(dt) for dt in before}
 		root = folder(run)
 		approval = json.loads((root / "approval.json").read_bytes())

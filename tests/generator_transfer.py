@@ -45,7 +45,7 @@ def deliver(site, path, run, work):
 		changed_path.write_text(json.dumps(altered))
 		try:
 			approve_sealed(str(changed_path), publisher)
-		except ValueError as exc:
+		except frappe.ValidationError as exc:
 			assert "does not match" in str(exc)
 		else:
 			raise AssertionError("Changed handoff was approved")
