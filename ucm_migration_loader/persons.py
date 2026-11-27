@@ -1,86 +1,11 @@
-"""Reconstitute a generated person, ordered child rows and their private picture through UCM."""
+"""Write a published person, its ordered child rows and its private picture through UCM."""
 
 from collections import Counter
 from hashlib import sha256
 from pathlib import Path
 
-import pymysql
-
 from .batch_metrics import measure
-from .dictionary_identity import TERM_COLUMNS, resolve_term
-from .stored_rows import business, checked_row, insert_document
-
-
-def person_records(source, context):
-	with source.cursor(pymysql.cursors.DictCursor) as cur:
-		last = None
-		while True:
-			clause = "and name>%s" if last else ""
-			cur.execute(
-				f"select * from tabPerson where context_tech_id=%s {clause} order by name limit 100",
-				(context, last) if last else (context,),
-			)
-			parents = cur.fetchall()
-			if not parents:
-				return
-			for parent in parents:
-				key = parent["name"]
-				children = {}
-				for dt, field in (
-					("Person Address", "person_addresses"),
-					("Person Other Name", "person_other_names"),
-				):
-					cur.execute(
-						f"select * from `tab{dt}` where parent=%s order by idx,name",
-						key,
-					)
-					rows = [business(r, child=True) for r in cur.fetchall()]
-					if any(
-						(r["parenttype"], r["parentfield"], r["idx"]) != ("Person", field, i)
-						for i, r in enumerate(rows, 1)
-					):
-						raise ValueError(f"Invalid published {dt} ownership or order")
-					children[dt] = rows
-				cur.execute(
-					"select * from tabFile where attached_to_doctype='Person' and attached_to_name=%s order by name",
-					key,
-				)
-				yield business(parent), children, cur.fetchall()
-			last = parents[-1]["name"]
-
-
-def map_terms(source, target, row, dt, cache):
-	import frappe
-
-	for df in frappe.get_meta(dt).fields:
-		value = row.get(df.fieldname)
-		if not value or df.fieldtype != "Link" or df.options != "Concept Value":
-			continue
-		if value not in cache:
-			with source.cursor() as cur:
-				cur.execute(
-					f"select {TERM_COLUMNS} from `tabConcept Value` where name=%s",
-					value,
-				)
-				attributes = cur.fetchone()
-			if attributes is None:
-				raise ValueError(f"Missing source term for {dt}.{df.fieldname}")
-			resolved, status = resolve_term(target, value, attributes)
-			if not resolved:
-				raise ValueError(f"Dictionary {dt}.{df.fieldname}: {status}")
-			cache[value] = resolved
-		row[df.fieldname] = cache[value]
-
-
-def attach_picture(person, source_file, private_root):
-	from frappe.utils.file_manager import get_max_file_size
-
-	path = (private_root / source_file["file_url"].removeprefix("/private/files/")).resolve(strict=True)
-	if not path.is_relative_to(private_root) or not path.is_file():
-		raise ValueError("Invalid private file location")
-	with path.open("rb") as handle:
-		content = handle.read(get_max_file_size() + 1)
-	return attach_picture_bytes(person, source_file, content)
+from .stored_rows import checked_row, insert_document
 
 
 @measure("attachments")
@@ -126,25 +51,6 @@ def attach_picture_bytes(person, source_file, content, *, folder=None, insert=in
 		if file_digest(handle, "sha256").digest() != sha256(content).digest():
 			raise ValueError("Stored private picture bytes differ")
 	return stored.file_url
-
-
-def insert_person(source, target, record, private_root, cache):
-	from .runs import only_admin
-
-	only_admin()
-	parent, children, files = record
-	row = dict(parent)
-	map_terms(source, target, row, "Person", cache)
-	nested = {}
-	for dt, key in (
-		("Person Address", "person_addresses"),
-		("Person Other Name", "person_other_names"),
-	):
-		rows = [dict(r) for r in children[dt]]
-		for child in rows:
-			map_terms(source, target, child, dt, cache)
-		nested[key] = rows
-	return insert_prepared_person(row, nested, files, lambda doc, f: attach_picture(doc, f, private_root))
 
 
 def insert_prepared_person(row, nested, files, attach, *, insert=insert_document):

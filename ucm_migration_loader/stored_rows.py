@@ -1,8 +1,18 @@
 """Compare published business columns to UCM storage after controller validation."""
 
+from decimal import Decimal
+
 from .batch_metrics import measure
-from .countries import _same
-from .shared_catalogs import SYSTEM
+
+# the columns Frappe keeps on every row, which are not business values
+SYSTEM = {"owner", "modified_by", "creation", "modified", "idx", "docstatus"}
+
+
+def same(target, source):
+	"""Whether a stored value is the published one: MariaDB gives a decimal where Frappe stores a float."""
+	if isinstance(source, Decimal) and isinstance(target, float):
+		return Decimal(str(target)) == source
+	return target == source
 
 
 def business(row, child=False):
@@ -19,7 +29,7 @@ def row_differences(dt, row):
 	meta = frappe.get_meta(dt)
 	differences = {}
 	for field, value in row.items():
-		if _same(stored[field], value):
+		if same(stored[field], value):
 			continue
 		df = meta.get_field(field)
 		if df and df.fieldtype == "Select" and stored[field] in (None, "") and value in (None, ""):

@@ -1,19 +1,19 @@
-"""Materialize the small UCM prerequisites for an isolated generator rehearsal in dependency order."""
+"""Copy the catalogs a rehearsal delegation refers to from its source to the target, in dependency order. A
+rehearsal's preparation only: on a real site the reference data is there before a delegation is loaded, and the
+loader checks that it is."""
 
 import pymysql
 
-from .contract import check_uuid
-from .countries import _same
-from .dictionary_identity import TERM_COLUMNS, resolve_term
-from .scope import CATALOGS
-
-SYSTEM = {"owner", "modified_by", "creation", "modified", "idx", "docstatus"}
+from ucm_migration_loader.contract import check_uuid
+from ucm_migration_loader.dictionary_identity import TERM_COLUMNS, resolve_term
+from ucm_migration_loader.scope import CATALOGS
+from ucm_migration_loader.stored_rows import SYSTEM, same
 
 
 def apply_catalogs(source, *, catalogs=CATALOGS, context=None):
 	import frappe
 
-	from .runs import only_admin
+	from ucm_migration_loader.runs import only_admin
 
 	only_admin()
 	if context is not None:
@@ -93,7 +93,7 @@ def apply_catalogs(source, *, catalogs=CATALOGS, context=None):
 			stored = frappe.db.get_value(dt, name, fields, as_dict=True, for_update=True)
 			if stored is None:
 				if dt == "Context Profile Exemption":
-					from .runs import check_closed
+					from ucm_migration_loader.runs import check_closed
 
 					check_closed(frappe.get_doc("Context", row["context_tech_id"], for_update=True))
 				frappe.get_doc({"doctype": dt, **row}).insert(set_name=name)
@@ -104,7 +104,7 @@ def apply_catalogs(source, *, catalogs=CATALOGS, context=None):
 			if differing := [
 				f
 				for f in fields
-				if not _same(stored[f], row[f])
+				if not same(stored[f], row[f])
 				and not (
 					frappe.get_meta(dt).get_field(f)
 					and frappe.get_meta(dt).get_field(f).fieldtype == "Select"

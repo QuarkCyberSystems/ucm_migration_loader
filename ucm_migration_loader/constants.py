@@ -23,8 +23,6 @@ DISCARDED = "Discarded"
 REJECTED = "Rejected"
 # a run in one of these has a staged file, and may hold rows of its delegation on the site, hidden
 HIDDEN = (STAGED, APPLYING, PAUSED, READY, CLEANING)
-# a run in one of these holds neither a file nor a row yet
-WAITING = (PROPOSED, AWAITING)
 
 # the write routes of a run's plan
 DOCUMENT = "Document API"

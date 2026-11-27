@@ -1,41 +1,8 @@
-"""Build parent-first activity batches from the frozen source and rehearse them through UCM."""
-
-from collections import defaultdict
+"""Write a published activity through UCM, and compare what UCM stored with what was published."""
 
 import pymysql
 
-from .activity_order import DEPENDENCIES, activity_batches
-from .stored_rows import business, checked_row, insert_document, row_differences
-
-
-def documents(source, context, size):
-	with (
-		source.cursor(pymysql.cursors.SSCursor) as keys,
-		source.cursor(pymysql.cursors.DictCursor) as cur,
-	):
-		keys.execute(
-			DEPENDENCIES,
-			context,
-		)
-		# The planner exhausts the streaming cursor into SQLite before yielding its first batch.
-		for names in activity_batches(keys, size):
-			cur.execute("select * from tabActivity where name in %s", (tuple(names),))
-			parents = {r["name"]: business(r) for r in cur.fetchall()}
-			cur.execute(
-				"select * from `tabActivity Objective` where parent in %s order by parent,idx,name",
-				(tuple(names),),
-			)
-			children = defaultdict(list)
-			for row in cur.fetchall():
-				items = children[row["parent"]]
-				if (
-					row["parenttype"] != "Activity"
-					or row["parentfield"] != "activity_objectives"
-					or row["idx"] != len(items) + 1
-				):
-					raise ValueError("Invalid published activity objective ownership or order")
-				items.append(business(row, child=True))
-			yield [(parents[name], children[name]) for name in names]
+from .stored_rows import checked_row, insert_document, row_differences
 
 
 def insert_activity(

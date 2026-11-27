@@ -220,9 +220,9 @@ def make_plan(source_site: str, target_site: str, prefix: str, digit: str) -> di
 def prepare(plan: dict, commit: bool) -> dict:
 	"""The contexts of the source on the target, locked and hidden, each with the catalogs it owns."""
 	import frappe
+	from rehearsal_catalogs import apply_catalogs
 
 	from ucm_migration_loader.scope import CATALOGS
-	from ucm_migration_loader.shared_catalogs import apply_catalogs
 
 	os.chdir(BENCH / "sites")
 	frappe.init(site=plan["target"])
