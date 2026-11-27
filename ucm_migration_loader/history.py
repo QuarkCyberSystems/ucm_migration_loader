@@ -15,7 +15,7 @@ def insert_history(row, *, insert=insert_document):
 		set_locked,
 	)
 
-	frappe.only_for("System Manager")
+	frappe.only_for("Migration Admin")
 	ctx = frappe.get_doc("Context", row["context_tech_id"], for_update=True)
 	check_closed(ctx, pilot=False)
 	locked, actor, when = row[LOCKED], row[BY], row[ON]

@@ -21,6 +21,7 @@ from .contract import (
 	OTHER_NAMES,
 	PROFILE,
 	PROFILES,
+	check_code,
 	check_uuid,
 	digest,
 	encoded,
@@ -166,6 +167,7 @@ def run(argv: list[str] | None = None, readable: bool = False):
 			"prepare",
 			"check-publication",
 			"locate-item",
+			"propose",
 			"send-publication",
 			"transfer-status",
 			"push",
@@ -199,6 +201,7 @@ def run(argv: list[str] | None = None, readable: bool = False):
 		help="Write private JSON Lines for activities missing required places when preparation is refused",
 	)
 	parser.add_argument("--publication", type=Path)
+	parser.add_argument("--handoff", type=Path, help="The hand-off of a sealed publication, for propose")
 	parser.add_argument("--sequence", type=int, help="Recorded batch number")
 	parser.add_argument("--item", type=int, help="One-based position inside the batch")
 	parser.add_argument("--private-files", type=Path)
@@ -527,6 +530,13 @@ def run(argv: list[str] | None = None, readable: bool = False):
 		if not args.run:
 			parser.error("Supply --run")
 		result = hand_over_quality(call, args)
+	elif args.action == "propose":
+		if not args.handoff:
+			parser.error("Supply --handoff")
+		handoff = json.loads(args.handoff.read_text())
+		if handoff.get("site") != args.site:
+			raise ValueError("The hand-off is for another site")
+		result = {**call("propose", handoff=handoff), "check_code": check_code(handoff["file_sha256"])}
 	else:
 		if not args.run:
 			parser.error("Supply --run")

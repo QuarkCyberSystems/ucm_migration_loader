@@ -18,11 +18,17 @@ from .contract import (
 RUN = "UCM Migration Run"
 BATCH = "UCM Migration Batch"
 QUEUE = "ucm_migration"
+ROLE = "Migration Admin"
+PUBLISHER = "Migration Publisher"
+PROPOSED = "Proposed"
+AWAITING = "Awaiting publication"
 PILOT_MARKER = "Synthetic UCM migration rehearsal"
 
 
 def _operator():
-	frappe.only_for("System Manager")
+	"""Who runs a migration on this site: the Migration Admin role, which the loader's DocTypes bring with them.
+	A System Manager reads the runs and gives the role."""
+	frappe.only_for(ROLE)
 
 
 def check_schema(manifest):
@@ -118,6 +124,15 @@ def begin(manifest: dict, publishing_user: str | None = None):
 	# Operators read the audit DocTypes in Desk. Only these controlled methods write them.
 	record.insert(set_name=run, ignore_permissions=True)
 	return _result(record)
+
+
+@frappe.whitelist(methods=["POST"])
+def propose(handoff: dict):
+	"""A publishing account proposes the hand-off of a publication it has sealed. It shows in the Desk for a
+	Migration Admin to approve; no file is accepted before that."""
+	from .operator import propose as proposed
+
+	return proposed(handoff)
 
 
 @frappe.whitelist(methods=["POST"])

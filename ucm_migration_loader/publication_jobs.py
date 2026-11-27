@@ -42,6 +42,8 @@ def request(run, action, max_batches=None):
 		return api._result(record)
 	if action == "activate" and record.state == "Activated":
 		return api._result(record)
+	if action == "discard" and record.state in (api.AWAITING, api.PROPOSED):
+		return _withdraw(run)
 	if max_batches is not None and max_batches < 1:
 		raise ValueError("Select a positive batch limit")
 	allowed = {
@@ -72,6 +74,21 @@ def request(run, action, max_batches=None):
 		"requested": action,
 		"applied": record.applied or 0,
 	}
+
+
+def _withdraw(run):
+	"""Decline a proposed hand-off, or take back the approval of a publication whose file was not staged: what
+	arrived of it is removed, and the delegation's context is free for another publication."""
+	import shutil
+
+	from .publication_transport import folder
+	from .ucm_migration_loader import run_overview
+
+	inbox = folder(run)
+	frappe.db.set_value(api.RUN, run, {"state": "Discarded", "finding": None})
+	run_overview.refresh(run)
+	frappe.db.after_commit.add(lambda: shutil.rmtree(inbox, ignore_errors=True))
+	return {"run": run, "state": "Discarded", "requested": "discard", "applied": 0}
 
 
 def enqueue(run, action, ticket, max_batches, stop_at):

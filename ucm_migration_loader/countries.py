@@ -27,7 +27,7 @@ def apply_countries(rows):
 	"""Caller owns the transaction. Identical rows can be replayed. Divergence aborts it."""
 	import frappe
 
-	frappe.only_for("System Manager")
+	frappe.only_for("Migration Admin")
 	created = reused = 0
 
 	def read(name):

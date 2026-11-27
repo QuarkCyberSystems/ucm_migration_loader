@@ -4,7 +4,8 @@ publication's folder.
 
 	ucm-push init                 write the settings file and the two connection files, to fill in
 	ucm-push seal DEMO01          seal the delegation with that code into a new folder, with its hand-off
-	ucm-push send DEMO01-2026-11-27     send the sealed file once the site operator has approved it
+	ucm-push propose DEMO01-2026-11-27  propose its hand-off to the site, for the migration team to approve
+	ucm-push send DEMO01-2026-11-27     send the sealed file once they have approved it
 	ucm-push status               from inside the folder: where the run stands on the site
 	ucm-push quality              collect the run's metrics
 
@@ -40,8 +41,10 @@ SETTINGS = "ucm-push.toml"
 HANDOFF, SEALED = "handoff.json", "delegation.sqlite"
 ALIASES = {"send": "send-publication", "sent": "transfer-status"}
 # the commands that work on one run of one sealed publication
-ON_A_RUN = ("send-publication", "transfer-status", "status", "report", "quality", "locate-item")
+ON_A_RUN = ("propose", "send-publication", "transfer-status", "status", "report", "quality", "locate-item")
 STATE = {
+	"Proposed": "Proposed: the site's migration team has not approved it yet",
+	"Awaiting publication": "Approved: the site waits for the sealed file",
 	"Publication staged": "Staged: checked, nothing written yet",
 	"Publication applying": "Loading",
 	"Publication paused": "Paused",
@@ -187,6 +190,8 @@ def _on_a_run(argv: list[str], action: str, folder: Path | None, conf: dict, rea
 	"""Add to a command on one run what its publication's folder and the settings know."""
 	if folder and not _has(argv, "--run"):
 		argv += ["--run", json.loads((folder / HANDOFF).read_text())["run"]]
+	if folder and action == "propose" and not _has(argv, "--handoff"):
+		argv += ["--handoff", str(folder / HANDOFF)]
 	if folder and action in ("send-publication", "locate-item") and not _has(argv, "--publication"):
 		argv += ["--publication", str(folder / SEALED)]
 	if action == "send-publication" and readable and not _has(argv, "--progress"):
@@ -236,6 +241,15 @@ def _short(run: str) -> str:
 def sentences(action: str, result: dict) -> str | None:
 	"""A command's result in sentences, for the commands an operator runs by hand. Nothing for the others, whose
 	result is shown as JSON."""
+	if action == "propose":
+		if result["state"] != "Proposed":
+			state = STATE.get(result["state"], result["state"])
+			return f"Run {_short(result['run'])} is on the site already, as {result['display_id']}: {state}."
+		return (
+			f"Proposed to the site as {result['display_id']}.\n"
+			f"Give the site's migration team this check code yourself: {result['check_code']}\n"
+			"They type it to approve. When ucm-push status says Approved, send the file: ucm-push send"
+		)
 	if action == "transfer-status":
 		share = result["offset"] / result["size"] if result["size"] else 0
 		done = "the whole file has arrived" if result["offset"] >= result["size"] else "not all of it yet"
@@ -246,7 +260,7 @@ def sentences(action: str, result: dict) -> str | None:
 	if action == "send-publication":
 		return (
 			f"Sent: {_megabytes(result['size'])}, all of it. "
-			f"Run {_short(result['run'])} can now be staged by the site operator."
+			f"The site stages run {_short(result['run'])} by itself: ucm-push status shows when."
 		)
 	if action == "status":
 		state = STATE.get(result["state"], result["state"])
@@ -357,6 +371,8 @@ def seal(conf: dict, delegation: str, snapshot: str | None = None, today: date |
 		"verified": True,
 		"file_sha256": fingerprint,
 		"file_bytes": size,
+		# for the site operator who approves it: the site makes the delegation's context from these
+		"delegation": {"code": code, "name": name},
 		**manifest,
 	}
 	(folder / HANDOFF).write_text(json.dumps(handoff, indent=1) + "\n")
@@ -376,7 +392,8 @@ def sealed_sentences(result: dict) -> str:
 			f"  Fingerprint  {result['file_sha256']}",
 			f"  Run          {result['run']}",
 			"",
-			f"Next: give {HANDOFF} from that folder to the site operator. After their approval:",
+			"Next: propose it to the site, and send it once the migration team has approved:",
+			f"  ucm-push propose {result['snapshot']}",
 			f"  ucm-push send {result['snapshot']}",
 		)
 	)

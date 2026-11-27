@@ -101,6 +101,12 @@ def digest(value):
 	return sha256(encoded(value)).hexdigest()
 
 
+def check_code(fingerprint: str) -> str:
+	"""A short form of a sealed file's fingerprint, for one person to tell another: the publishing operator
+	reads it from their command, and the person who approves types it."""
+	return f"{fingerprint[:4]}-{fingerprint[4:8]}".upper()
+
+
 def check_uuid(value):
 	if not isinstance(value, str) or str(UUID(value)) != value:
 		raise ValueError("Expected a canonical UUID")

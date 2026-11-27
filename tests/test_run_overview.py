@@ -3,6 +3,7 @@ give, the rows on both sides, the findings with their severity, and the rows wri
 
 import csv
 import io
+import json
 
 import pytest
 
@@ -105,6 +106,55 @@ def test_a_staged_run_waits_at_every_step():
 	}
 	assert steps[0]["seconds"] == 12.3 and steps[0]["facts"] == {"batches": 6, "rows": 414, "tables": 21}
 	assert steps[1]["seconds"] is None
+
+
+def test_an_approved_run_waits_for_its_file():
+	approval = {"by": "admin@example.org", "publisher": "sender@example.org", "bytes": 300, "arrived": 0}
+	waiting = run_overview.steps({**run("Awaiting publication"), "approval": approval}, [], {}, {}, {}, {})
+	assert statuses(waiting) == {
+		"stage": "waiting",
+		"write": "waiting",
+		"verify": "waiting",
+		"activate": "waiting",
+	}
+	assert waiting[0]["facts"] == approval
+	arriving = {**approval, "arrived": 120}
+	steps = run_overview.steps({**run("Awaiting publication"), "approval": arriving}, [], {}, {}, {}, {})
+	assert statuses(steps)["stage"] == "running" and steps[0]["facts"]["arrived"] == 120
+
+
+class Record(dict):
+	__getattr__ = dict.get
+
+
+def test_a_run_names_who_proposed_approved_and_staged_it():
+	approval = {
+		"proposed_by": "sender@example.org",
+		"proposed_on": "2026-01-05 09:00:00",
+		"by": "admin@example.org",
+		"on": "2026-01-05 10:00:00",
+	}
+	timeline = {"stage": {"seconds": 2, "at": "2026-01-05 11:00:00", "by": "admin@example.org"}}
+	record = Record(owner="sender@example.org", creation="2026-01-05 09:00:00", state="Proposed")
+	record["approval_json"] = json.dumps({key: approval[key] for key in ("proposed_by", "proposed_on")})
+	proposed = run_overview._people(record)
+	assert (proposed["proposed_by"], proposed["proposed_on"]) == ("sender@example.org", "2026-01-05 09:00:00")
+	assert not any(proposed[key] for key in ("approved_by", "approved_on", "staged_by", "staged_on"))
+
+	record.update(state="Publication staged", approval_json=json.dumps(approval))
+	record["timeline_json"] = json.dumps(timeline)
+	staged = run_overview._people(record)
+	assert (staged["approved_by"], staged["approved_on"]) == ("admin@example.org", "2026-01-05 10:00:00")
+	assert (staged["staged_by"], staged["staged_on"]) == ("admin@example.org", "2026-01-05 11:00:00")
+	assert staged["proposed_by"] == "sender@example.org"
+
+
+def test_a_run_made_by_its_staging_names_its_author():
+	record = Record(owner="admin@example.org", creation="2026-01-05 11:00:00", state="Publication staged")
+	record["timeline_json"] = json.dumps({"stage": {"seconds": 2, "at": "2026-01-05 11:00:03"}})
+	people = run_overview._people(record)
+	assert (people["staged_by"], people["staged_on"]) == ("admin@example.org", "2026-01-05 11:00:00")
+	assert people["approved_by"] is None and people["proposed_by"] is None
 
 
 def test_a_running_load_shows_the_step_it_is_at():

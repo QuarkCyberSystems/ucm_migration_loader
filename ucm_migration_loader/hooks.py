@@ -5,6 +5,9 @@ app_description = "Rehearse and import versioned publishing snapshots into UCM"
 app_email = "vivek@quarkcs.com"
 required_apps = ["ucm"]
 
+after_install = "ucm_migration_loader.install.after_install"
+after_migrate = "ucm_migration_loader.install.after_migrate"
+
 doc_events = {
 	"Context": {"validate": "ucm_migration_loader.application.guard_context"},
 	"Record Share": {"validate": "ucm_migration_loader.application.guard_share"},

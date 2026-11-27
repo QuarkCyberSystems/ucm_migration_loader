@@ -108,8 +108,9 @@ def make_receipt(run: str, sequence: int, **values):
 	return receipt
 
 
-def make_account(name: str, operator: bool = False) -> str:
-	"""An enabled account: a publishing account without a role, or an operator (System Manager)."""
+def make_account(name: str, operator: bool = False, publisher: bool = False) -> str:
+	"""An enabled account: one without a role, a publishing account that may propose (Migration Publisher), or
+	an operator (Migration Admin)."""
 	email = f"{name}@loader-test.example"
 	if not frappe.db.exists("User", email):
 		# the users a loaded site has just received count against Frappe's limit on users created per hour
@@ -121,7 +122,10 @@ def make_account(name: str, operator: bool = False) -> str:
 					"first_name": name,
 					"enabled": 1,
 					"send_welcome_email": 0,
-					"roles": [{"role": "System Manager"}] if operator else [],
+					"roles": [
+						*([{"role": "Migration Admin"}] if operator else []),
+						*([{"role": "Migration Publisher"}] if publisher else []),
+					],
 				}
 			).insert(ignore_permissions=True)
 	return email

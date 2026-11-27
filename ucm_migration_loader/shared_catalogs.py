@@ -13,7 +13,7 @@ SYSTEM = {"owner", "modified_by", "creation", "modified", "idx", "docstatus"}
 def apply_catalogs(source, *, catalogs=CATALOGS, context=None):
 	import frappe
 
-	frappe.only_for("System Manager")
+	frappe.only_for("Migration Admin")
 	if context is not None:
 		check_uuid(context)
 		with source.cursor() as cur:

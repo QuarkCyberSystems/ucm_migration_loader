@@ -35,7 +35,8 @@
   "publication_stamp",
   "reconcile_counts",
   "timeline_json",
-  "quality_json"
+  "quality_json",
+  "approval_json"
  ],
  "fields": [
   {
@@ -77,7 +78,7 @@
    "fieldtype": "Select",
    "in_standard_filter": 1,
    "label": "State",
-   "options": "Receiving\nPublication staged\nPublication applying\nPublication cleaning\nPublication paused\nPublication ready\nStaged\nVerified\nApplying\nPaused\nReady\nCleaning\nRejected\nActivated\nDiscarded",
+   "options": "Receiving\nProposed\nAwaiting publication\nPublication staged\nPublication applying\nPublication cleaning\nPublication paused\nPublication ready\nStaged\nVerified\nApplying\nPaused\nReady\nCleaning\nRejected\nActivated\nDiscarded",
    "read_only": 1
   },
   {
@@ -234,10 +235,17 @@
    "hidden": 1,
    "label": "Data quality hand-over",
    "read_only": 1
+  },
+  {
+   "fieldname": "approval_json",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Hand-off approval",
+   "read_only": 1
   }
  ],
  "links": [],
- "modified": "2026-11-27 08:02:31.064495",
+ "modified": "2026-11-27 16:02:30.284246",
  "modified_by": "Administrator",
  "module": "UCM Migration Loader",
  "name": "UCM Migration Run",
@@ -246,6 +254,10 @@
   {
    "read": 1,
    "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "role": "Migration Admin"
   }
  ],
  "row_format": "Dynamic",

@@ -27,9 +27,9 @@ def folder(run):
 def approve(run: str, publisher: str, sha256: str, size: int):
 	api._operator()
 	if not re.fullmatch(r"[a-f0-9]{64}", sha256) or int(size) < 1:
-		raise ValueError("Invalid approved publication fingerprint")
+		frappe.throw(_("Invalid approved publication fingerprint"))
 	if publisher in ("Guest", "Administrator") or not frappe.db.get_value("User", publisher, "enabled"):
-		raise ValueError("Select an enabled publishing account")
+		frappe.throw(_("Select an enabled publishing account"))
 	root = folder(run)
 	root.mkdir(mode=0o700, parents=True, exist_ok=True)
 	approval = {
@@ -51,7 +51,7 @@ def approve(run: str, publisher: str, sha256: str, size: int):
 			os.link(temporary, dest)
 		except FileExistsError:
 			if json.loads(dest.read_bytes()) != approval:
-				raise ValueError("Existing publication approval differs") from None
+				frappe.throw(_("This run was approved before, for another account or another file"))
 	return approval
 
 
@@ -125,7 +125,50 @@ def upload(run: str, offset: int, data: str):
 					os.fsync(fd)
 				finally:
 					os.close(fd)
-		return progress(root, approval)
+		arrived = progress(root, approval)
+		if arrived["offset"] == approval["size"]:
+			_stage_when_committed(run)
+		return arrived
+
+
+def _stage_when_committed(run: str) -> None:
+	"""The whole file is here: have the migration queue stage it. The approval was the decision; staging checks
+	the file against it and writes nothing into UCM."""
+	if frappe.db.get_value(api.RUN, run, "state") != api.AWAITING:
+		return  # approved from the bench without a run, or staged already: `receive` stages it by hand
+	frappe.enqueue(
+		"ucm_migration_loader.publication_transport.stage_arrived",
+		queue=api.QUEUE,
+		timeout=3600,
+		job_id=f"ucm_migration_stage::{run}",
+		deduplicate=True,
+		enqueue_after_commit=True,
+		run=run,
+	)
+
+
+def stage_arrived(run: str) -> None:
+	"""Queued job: stage the file of a run that waits for it, in the name of the Migration Admin who approved
+	it. A file the site's checks refuse is kept as a refused run; any other failure is noted on the run, which
+	keeps waiting until someone stages it from the Desk."""
+	record = frappe.db.get_value(api.RUN, run, ["state", "approval_json"], as_dict=True)
+	approver = json.loads((record and record.approval_json) or "{}").get("by")
+	if not record or record.state != api.AWAITING or not approver:
+		return
+	# nosemgrep: frappe-semgrep-rules.rules.security.frappe-setuser -- reviewed: the job is queued by the sender's last piece and must not run with the sender's rights or with more than the approver's; receive() checks the role again and compares the file with the approved fingerprint
+	frappe.set_user(approver)
+	try:
+		receive(run)
+	except Exception as failed:
+		frappe.db.rollback()
+		if frappe.db.get_value(api.RUN, run, "state") == "Rejected":
+			return  # refused by the site's checks: the run says what differs
+		# the loader's own refusals are sentences without data; another error gives its kind only
+		reason = str(failed) if isinstance(failed, ValueError) else type(failed).__name__
+		frappe.db.set_value(api.RUN, run, "finding", f"Staging failed: {reason}"[:140])
+		# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the failure is kept on the run although the job fails
+		frappe.db.commit()
+		raise
 
 
 def receive(run: str):

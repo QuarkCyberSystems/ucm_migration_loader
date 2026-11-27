@@ -169,6 +169,8 @@ def test_a_status_is_told_in_the_teams_words():
 		"Run aaaaaaaaaaaa…: Paused.",
 		"Finding: apply batch 5, item 19 (Person): ValueError",
 	]
+	approved = publishing.sentences("status", {**loading, "state": "Awaiting publication"})
+	assert approved == "Run aaaaaaaaaaaa…: Approved: the site waits for the sealed file."
 	ready = publishing.sentences("status", {**loading, "state": "Publication ready"})
 	assert ready == "Run aaaaaaaaaaaa…: Verified, waiting for the go-live decision."
 
@@ -179,7 +181,10 @@ def test_a_transfer_and_a_hand_over_are_told_in_a_sentence():
 		"transfer-status", receipt
 	)
 	sent = publishing.sentences("send-publication", {**receipt, "offset": 295_000_000})
-	assert sent == "Sent: 295.0 MB, all of it. Run aaaaaaaaaaaa… can now be staged by the site operator."
+	assert (
+		sent
+		== "Sent: 295.0 MB, all of it. The site stages run aaaaaaaaaaaa… by itself: ucm-push status shows when."
+	)
 	stored = {"run": RUN, "metrics": 69, "failed": 0, "destination": "file metrics.csv, table dq_target"}
 	assert publishing.sentences("quality", stored) == (
 		"69 metrics of run aaaaaaaaaaaa… stored in file metrics.csv, table dq_target: none failing. "
@@ -265,6 +270,7 @@ def test_seal_makes_the_folder_the_file_and_the_hand_off(sealing):
 	handoff = json.loads((folder / "handoff.json").read_text())
 	assert (handoff["run"], handoff["verified"], handoff["file_bytes"]) == (RUN, True, len(b"sealed bytes"))
 	assert len(handoff["file_sha256"]) == 64 and "folder" not in handoff
+	assert handoff["delegation"] == {"code": "DEMO01", "name": "Synthetic delegation"}
 	assert calls["freeze"] == {
 		"site": "target.example",
 		"snapshot": "DEMO01-2026-03-04",
@@ -314,6 +320,7 @@ def test_the_operator_reads_what_was_sealed_and_what_comes_next(sealing, monkeyp
 	assert f"Sealed DEMO01 (Synthetic delegation) as snapshot {snapshot}" in told
 	assert "2,000 in 2 batches" in told and "Person 1,000 · Person Note 1,000" in told
 	assert told.rstrip().endswith(f"ucm-push send {snapshot}")
+	assert f"ucm-push propose {snapshot}" in told
 	monkeypatch.setattr(sys, "argv", ["ucm-push", "seal", "DEMO01", "--json"])
 	push.main()
 	assert json.loads(capsys.readouterr().out)["delegation_code"] == "DEMO01"
@@ -330,6 +337,72 @@ def test_seal_needs_the_hosts_settings(tmp_path, monkeypatch):
 def test_the_settings_file_is_explained(capsys):
 	publishing.main(["--help-settings"])
 	assert 'source_config = "/srv/migration/credentials/source.json"' in capsys.readouterr().out
+
+
+# --- proposing a hand-off ---------------------------------------------------------------------------------------
+
+
+def test_the_check_code_is_the_start_of_the_files_fingerprint():
+	from ucm_migration_loader.contract import check_code
+
+	assert check_code("ae064673bb9551a3" + "0" * 48) == "AE06-4673"
+
+
+def test_propose_sends_the_hand_off_of_the_folder(host):
+	argv, _ = publishing.fill(["propose", "DEMO01-2026-01-02"], terminal=False)
+	assert argv[0] == "propose"
+	assert option(argv, "--handoff") == str(host / "publications/DEMO01-2026-01-02/handoff.json")
+	assert option(argv, "--site") == "target.example"
+
+
+def test_the_operator_is_told_the_check_code_to_pass_on(host, monkeypatch, capsys):
+	sealed = host / "publications" / "DEMO01-2026-01-02"
+	handoff = {"run": RUN, "site": "target.example", "file_sha256": "ae064673" + "0" * 56}
+	(sealed / "handoff.json").write_text(json.dumps(handoff))
+	sent = []
+
+	class Session:
+		def mount(self, *_args):
+			pass
+
+		def post(self, url, json, headers, timeout, allow_redirects):
+			sent.append((url.rsplit(".", 1)[1], json))
+
+			class Response:
+				status_code = 200
+
+				def json(self):
+					return {"message": {"run": RUN, "display_id": "MIG-0070", "state": "Proposed"}}
+
+			return Response()
+
+	monkeypatch.setattr(push.requests, "Session", Session)
+	monkeypatch.setenv("UCM_MIGRATION_TOKEN", "key:secret")
+	publishing.main(["propose", "DEMO01-2026-01-02", "--text"])
+	told = capsys.readouterr().out
+	assert sent == [("propose", {"handoff": handoff})]
+	assert "Proposed to the site as MIG-0070." in told and "check code yourself: AE06-4673" in told
+	publishing.main(["propose", "DEMO01-2026-01-02", "--json"])
+	assert json.loads(capsys.readouterr().out)["check_code"] == "AE06-4673"
+
+
+def test_a_hand_off_for_another_site_is_not_proposed(host, monkeypatch):
+	sealed = host / "publications" / "DEMO01-2026-01-02"
+	(sealed / "handoff.json").write_text(
+		json.dumps({"run": RUN, "site": "elsewhere", "file_sha256": "0" * 64})
+	)
+	monkeypatch.setenv("UCM_MIGRATION_TOKEN", "key:secret")
+	with pytest.raises(ValueError, match="another site"):
+		publishing.main(["propose", "DEMO01-2026-01-02", "--json"])
+
+
+def test_a_proposal_already_on_the_site_is_said_so():
+	known = {"run": RUN, "display_id": "MIG-0070", "state": "Awaiting publication", "check_code": "AE06-4673"}
+	assert publishing.sentences("propose", known) == (
+		"Run aaaaaaaaaaaa… is on the site already, as MIG-0070: Approved: the site waits for the sealed file."
+	)
+	waiting = publishing.sentences("status", {"run": RUN, "state": "Proposed", "finding": None})
+	assert waiting == "Run aaaaaaaaaaaa…: Proposed: the site's migration team has not approved it yet."
 
 
 # --- the host's files -----------------------------------------------------------------------------------------

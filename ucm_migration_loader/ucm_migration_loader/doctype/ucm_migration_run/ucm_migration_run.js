@@ -4,7 +4,7 @@ frappe.ui.form.on("UCM Migration Run", {
 		// a run is changed by its actions only, never by editing its fields
 		frm.disable_save();
 		const state = frm.doc.state;
-		if (state !== "Rejected") show_batch_progress(frm);
+		if (!["Rejected", AWAITING, PROPOSED].includes(state)) show_batch_progress(frm);
 		show_write_route(frm);
 		show_overview(frm);
 		frm.add_custom_button(__("View batches"), () =>
@@ -57,12 +57,34 @@ frappe.ui.form.on("UCM Migration Run", {
 		}
 		if (["Cleaning", "Publication cleaning"].includes(state)) {
 			action("Resume cleanup", "discard");
+		} else if (state === PROPOSED) {
+			action(
+				"Decline",
+				"discard",
+				"Decline this proposed hand-off? No file will be accepted for it."
+			);
+			if (frappe.user.has_role("Migration Admin")) {
+				// the decision this run waits for
+				frm.add_custom_button(__("Approve hand-off"), () =>
+					approve_proposed(frm)
+				).addClass("btn-primary");
+			}
+		} else if (state === AWAITING) {
+			action(
+				"Withdraw approval",
+				"discard",
+				"Withdraw the approval of this publication? What has arrived of its file is removed."
+			);
 		} else if (!["Activated", "Discarded", "Rejected"].includes(state)) {
 			action(
 				"Discard run",
 				"discard",
 				"Discard this run and remove its applied records? The audit receipts will be retained."
 			);
+		}
+		if ([AWAITING, "Rejected"].includes(state)) {
+			// staging follows the file's arrival by itself; this asks for it again, after a failure or a refusal
+			frm.add_custom_button(__("Stage now"), () => stage_now(frm), group);
 		}
 		if (frm.doc.reconciliation_json) {
 			const report = JSON.parse(frm.doc.reconciliation_json);
@@ -113,6 +135,135 @@ frappe.ui.form.on("UCM Migration Run", {
 function showing(frm) {
 	const route = frappe.get_route();
 	return route[0] === "Form" && route[1] === frm.doctype && route[2] === frm.doc.name;
+}
+
+// Approve a hand-off its publishing account proposed. The approver types the check code the publishing operator
+// gave them: it is the short form of the file's fingerprint, which this dialog does not show.
+async function approve_proposed(frm) {
+	const METHOD =
+		"ucm_migration_loader.ucm_migration_loader.doctype.ucm_migration_run.ucm_migration_run.";
+	const { message: found } = await frappe.call({
+		method: METHOD + "inspect_proposed",
+		args: { run: frm.doc.name },
+	});
+	const about = found.delegation || {};
+	const named = found.context.exists
+		? `${found.context.name} (${found.context.code})`
+		: about.code
+		? `${about.name} (${about.code})`
+		: found.context.id;
+	let context, color;
+	if (found.context.problem) [context, color] = [found.context.problem, "text-danger"];
+	else if (found.context.exists)
+		[context, color] = [
+			__("Locked, hidden and empty: ready for this publication."),
+			"text-success",
+		];
+	else
+		[context, color] = [
+			__("This site has no context for it yet. It is made below, locked and hidden."),
+			"text-muted",
+		];
+	const rows = [
+		[__("Delegation"), safe(named)],
+		[__("Snapshot"), safe(found.snapshot)],
+		[__("Rows"), __("{0} in {1} batches", [number(found.rows), number(found.batches)])],
+		[__("Sealed file"), megabytes(found.bytes)],
+		[__("Proposed by"), safe(found.proposed_by)],
+		[__("Context"), `<span class="${color}">${safe(context)}</span>`],
+	];
+	const dialog = new frappe.ui.Dialog({
+		title: __("Approve the hand-off of {0}", [found.display_id]),
+		fields: [
+			{
+				fieldname: "summary",
+				fieldtype: "HTML",
+				options: `<table class="table table-borderless table-sm">${rows
+					.map(
+						([label, value]) =>
+							`<tr><td class="text-muted" style="width: 8rem">${label}</td><td>${value}</td></tr>`
+					)
+					.join("")}</table>`,
+			},
+			{
+				fieldname: "check_code",
+				fieldtype: "Data",
+				label: __("Check code"),
+				reqd: 1,
+				description: __(
+					"The code the publishing operator's command gave them, as they told it to you. It ties your approval to their sealed file."
+				),
+			},
+			{
+				fieldname: "context_section",
+				fieldtype: "Section Break",
+				label: __("The delegation's context"),
+				hidden: found.context.exists ? 1 : 0,
+			},
+			{
+				fieldname: "context_code",
+				fieldtype: "Data",
+				label: __("Code"),
+				default: about.code,
+			},
+			{ fieldname: "context_column", fieldtype: "Column Break" },
+			{
+				fieldname: "context_name",
+				fieldtype: "Data",
+				label: __("Name"),
+				default: about.name,
+			},
+		],
+		primary_action_label: __("Approve"),
+		primary_action: async (values) => {
+			try {
+				await frappe.call({
+					method: METHOD + "approve_proposed",
+					args: {
+						run: frm.doc.name,
+						check_code: values.check_code,
+						context_code: found.context.exists ? null : values.context_code,
+						context_name: found.context.exists ? null : values.context_name,
+					},
+					freeze: true,
+				});
+			} catch {
+				// refused, and said so by the server's message: the dialog stays for another try
+				return;
+			}
+			dialog.hide();
+			frappe.show_alert({
+				message: __("Approved. It is staged when its file has arrived."),
+				indicator: "green",
+			});
+			await frm.reload_doc();
+		},
+	});
+	if (found.context.problem) dialog.get_primary_btn().prop("disabled", true);
+	dialog.show();
+}
+
+// Ask for the staging of the arrived file, and say how it went.
+async function stage_now(frm) {
+	let result;
+	try {
+		({ message: result } = await frappe.call({
+			method: "ucm_migration_loader.ucm_migration_loader.doctype.ucm_migration_run.ucm_migration_run.stage_now",
+			args: { run: frm.doc.name },
+			freeze: true,
+		}));
+	} catch {
+		// the server's message says why
+		return;
+	}
+	const said = {
+		staged: [__("Staged: the file is checked, nothing is written yet."), "green"],
+		refused: [__("Refused: the run says what differs."), "red"],
+		incomplete: [__("The file has not arrived completely yet."), "orange"],
+		"not approved": [__("This run has no approval on this site."), "orange"],
+	}[result.outcome];
+	if (said) frappe.show_alert({ message: said[0], indicator: said[1] });
+	await frm.reload_doc();
 }
 
 // The worker opens the delegation after the request: show the result without a click, while this form stays open.
@@ -305,7 +456,14 @@ const DERIVED = {
 	"share facts": __("Share facts"),
 	"latest state marks": __("Latest state marks"),
 };
-const RUNNING = ["Publication applying", "Publication cleaning"];
+const AWAITING = "Awaiting publication";
+const PROPOSED = "Proposed";
+const RUNNING = ["Publication applying", "Publication cleaning", AWAITING];
+const megabytes = (bytes) =>
+	(Number(bytes || 0) / 1e6).toLocaleString(undefined, {
+		maximumFractionDigits: 1,
+		minimumFractionDigits: 1,
+	}) + " MB";
 
 const number = (n) => Number(n || 0).toLocaleString();
 const safe = (text) => frappe.utils.escape_html(String(text ?? ""));
@@ -381,6 +539,25 @@ function step_detail(step, data) {
 	const set_based = data.facts.route === SET_BASED;
 	if (step.step === "stage") {
 		if (step.status === "failed") return refusal(facts);
+		if (data.state === PROPOSED) {
+			return __(
+				"Proposed by {0} on {1}: a sealed file of {2}. Waiting for a Migration Admin's approval.",
+				[
+					facts.proposed_by,
+					frappe.datetime.str_to_user(facts.proposed_on),
+					megabytes(facts.bytes),
+				]
+			);
+		}
+		if (data.state === AWAITING) {
+			return __("Approved by {0} on {1}, to be sent by {2}. {3} of {4} arrived.", [
+				facts.by,
+				frappe.datetime.str_to_user(facts.on),
+				facts.publisher,
+				megabytes(facts.arrived),
+				megabytes(facts.bytes),
+			]);
+		}
 		return __("{0} batches, {1} rows, {2} tables with the columns of this site", [
 			number(facts.batches),
 			number(facts.rows),
@@ -463,6 +640,7 @@ function steps_html(data) {
 
 function facts_html(data) {
 	const facts = data.facts;
+	const when = (moment) => moment && frappe.datetime.str_to_user(moment);
 	const versions = Object.entries(facts.versions)
 		.map(([app, version]) => `${app} ${version}`)
 		.join(", ");
@@ -470,8 +648,12 @@ function facts_html(data) {
 		[__("Delegation"), data.delegation],
 		[__("Route"), __(facts.route)],
 		[__("Snapshot"), facts.snapshot],
-		[__("Staged"), frappe.datetime.str_to_user(facts.started_on)],
-		[__("Staged by"), facts.started_by],
+		[__("Proposed"), when(facts.proposed_on)],
+		[__("Proposed by"), facts.proposed_by],
+		[__("Approved"), when(facts.approved_on)],
+		[__("Approved by"), facts.approved_by],
+		[__("Staged"), when(facts.staged_on)],
+		[__("Staged by"), facts.staged_by],
 		[__("Publishing account"), facts.publishing_user],
 		[__("Published with"), versions],
 	].filter(([, value]) => value);
@@ -480,9 +662,9 @@ function facts_html(data) {
 	)}</h6><table class="table table-borderless table-sm">${rows
 		.map(
 			([label, value]) =>
-				`<tr><td class="text-muted" style="width: 9rem">${safe(label)}</td><td>${safe(
-					value
-				)}</td></tr>`
+				`<tr><td class="text-muted" style="width: 9rem">${safe(
+					label
+				)}</td><td style="overflow-wrap: anywhere">${safe(value)}</td></tr>`
 		)
 		.join("")}</table>`;
 }
@@ -566,6 +748,29 @@ function show_intro(frm, data) {
 						[number(data.batches_committed)]
 				  );
 		frm.set_intro(text, "red");
+		return;
+	}
+	if (state === PROPOSED) {
+		frm.set_intro(
+			__(
+				"The publishing account proposes this publication of {0}. Nothing is accepted for it until a Migration Admin approves the hand-off, with the check code the publishing operator gives them.",
+				[who]
+			),
+			"yellow"
+		);
+		return;
+	}
+	if (state === AWAITING) {
+		if (data.finding) frm.set_intro(data.finding, "orange");
+		else {
+			frm.set_intro(
+				__(
+					"The hand-off of {0} is approved. The run waits for the sealed file, and is staged by itself when the whole file has arrived.",
+					[who]
+				),
+				"blue"
+			);
+		}
 		return;
 	}
 	if (state === "Publication ready") {

@@ -51,7 +51,7 @@ def apply_areas(plan):
 	"""One caller-owned transaction. Matching existing records can be shared between waves."""
 	import frappe
 
-	frappe.only_for("System Manager")
+	frappe.only_for("Migration Admin")
 	result = {}
 	for n in LEVELS:
 		dt = f"Admin Level {n}"

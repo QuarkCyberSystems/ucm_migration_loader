@@ -3,8 +3,9 @@
 	bench --site <site> ucm-migration approve <handoff.json> --publisher <account>
 	bench --site <site> ucm-migration stage <handoff.json>
 
-`approve` binds a reviewed hand-off to the publishing account that will send its file. `stage` checks the file
-once it has arrived and makes it a run in the Desk. Each says in a sentence what happened and what comes next.
+The Desk does both: a Migration Admin approves a hand-off from the list of runs, and the file is staged by itself
+when it has arrived. These commands are the same steps from the bench, for a site without a browser at hand and
+for scripts. Each says in a sentence what happened and what comes next.
 """
 
 import sys
@@ -25,8 +26,9 @@ def said(result: dict, handoff: str) -> tuple[str, int]:
 		return (
 			f"Approved run {short} for {result['publisher']}: {result['rows']:,} rows in "
 			f"{result['batches']:,} batches, {megabytes(result['bytes'])}.\n"
-			"The publishing operator can send the file now. Once it has arrived:\n"
-			f"  bench --site {frappe.local.site} ucm-migration stage {handoff}"
+			f"It waits for its file as {result['display_id']}. The publishing operator can send the file now: "
+			"it is staged by itself when all of it has arrived.\n"
+			f"To stage it by hand: bench --site {frappe.local.site} ucm-migration stage {handoff}"
 		), 0
 	outcome = result["outcome"]
 	if outcome == "staged":
@@ -60,7 +62,7 @@ def on_site(context, work) -> None:
 		# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the end of a bench command, as bench execute commits
 		frappe.db.commit()
 		text, code = said(result, handoff)
-	except ValueError as refused:
+	except (ValueError, frappe.ValidationError) as refused:
 		frappe.db.rollback()
 		text, code = f"Not done: {refused}", 1
 	finally:

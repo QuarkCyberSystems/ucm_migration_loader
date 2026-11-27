@@ -1,10 +1,8 @@
 {
- "doctype": "DocType",
- "name": "UCM Migration Batch",
- "module": "UCM Migration Loader",
+ "actions": [],
  "autoname": "hash",
- "sort_field": "sequence_number",
- "sort_order": "ASC",
+ "creation": "2026-11-26 18:23:04.635166",
+ "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "display_id",
@@ -28,103 +26,103 @@
  "fields": [
   {
    "fieldname": "display_id",
-   "label": "Batch ID",
    "fieldtype": "Data",
+   "label": "Batch ID",
+   "no_copy": 1,
    "read_only": 1,
-   "unique": 1,
-   "no_copy": 1
+   "unique": 1
   },
   {
    "fieldname": "migration_run",
-   "label": "Migration Run",
    "fieldtype": "Link",
-   "read_only": 1,
+   "in_list_view": 1,
+   "label": "Migration Run",
    "options": "UCM Migration Run",
-   "search_index": 1,
-   "in_list_view": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "sequence_number",
-   "label": "Sequence Number",
    "fieldtype": "Int",
-   "read_only": 1,
-   "in_list_view": 1
+   "in_list_view": 1,
+   "label": "Sequence Number",
+   "read_only": 1
   },
   {
    "fieldname": "digest",
-   "label": "Digest",
    "fieldtype": "Data",
+   "label": "Digest",
    "read_only": 1
   },
   {
    "fieldname": "payload",
-   "label": "Payload",
    "fieldtype": "Long Text",
+   "label": "Payload",
    "read_only": 1
   },
   {
    "fieldname": "target_digest",
-   "label": "Applied Row Digest",
    "fieldtype": "Data",
+   "label": "Applied Row Digest",
    "read_only": 1
   },
   {
    "fieldname": "write_route",
-   "label": "Write route",
    "fieldtype": "Data",
+   "label": "Write route",
    "read_only": 1
   },
   {
    "fieldname": "parent_doctype",
-   "label": "Published DocType",
    "fieldtype": "Data",
+   "label": "Published DocType",
    "read_only": 1
   },
   {
    "fieldname": "parent_rows",
-   "label": "Parent rows",
    "fieldtype": "Int",
+   "label": "Parent rows",
    "read_only": 1
   },
   {
    "fieldname": "payload_bytes",
-   "label": "Batch payload bytes",
    "fieldtype": "Int",
+   "label": "Batch payload bytes",
    "read_only": 1
   },
   {
    "fieldname": "attachment_bytes",
-   "label": "Private attachment bytes",
    "fieldtype": "Int",
+   "label": "Private attachment bytes",
    "read_only": 1
   },
   {
    "fieldname": "verify_seconds",
-   "label": "Batch integrity check (seconds)",
    "fieldtype": "Float",
-   "read_only": 1,
-   "precision": "6"
+   "label": "Batch integrity check (seconds)",
+   "precision": "6",
+   "read_only": 1
   },
   {
    "fieldname": "write_seconds",
-   "label": "Validated write including hooks and attachments (seconds)",
    "fieldtype": "Float",
-   "read_only": 1,
-   "precision": "6"
+   "label": "Validated write including hooks and attachments (seconds)",
+   "precision": "6",
+   "read_only": 1
   },
   {
    "fieldname": "reconcile_seconds",
-   "label": "Row reconciliation (seconds)",
    "fieldtype": "Float",
-   "read_only": 1,
-   "precision": "6"
+   "label": "Row reconciliation (seconds)",
+   "precision": "6",
+   "read_only": 1
   },
   {
    "fieldname": "release_fingerprint",
    "fieldtype": "Data",
+   "hidden": 1,
    "label": "Reconciled row fingerprint",
-   "read_only": 1,
-   "hidden": 1
+   "read_only": 1
   },
   {
    "fieldname": "validation_seconds",
@@ -141,15 +139,27 @@
    "read_only": 1
   }
  ],
+ "links": [],
+ "modified": "2026-11-27 15:34:59.596073",
+ "modified_by": "Administrator",
+ "module": "UCM Migration Loader",
+ "name": "UCM Migration Batch",
+ "owner": "Administrator",
  "permissions": [
   {
-   "role": "System Manager",
-   "read": 1
+   "read": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "role": "Migration Admin"
   }
  ],
- "creation": "2026-11-18 00:00:00",
- "modified": "2026-11-26 00:00:00",
- "title_field": "display_id",
+ "row_format": "Dynamic",
+ "search_fields": "display_id",
  "show_title_field_in_link": 1,
- "search_fields": "display_id"
+ "sort_field": "sequence_number",
+ "sort_order": "ASC",
+ "states": [],
+ "title_field": "display_id"
 }

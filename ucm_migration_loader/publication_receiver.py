@@ -125,7 +125,7 @@ def _staged_before(run, manifest, dest):
 	record = api._record(run)
 	if json.loads(record.manifest_json) != manifest or record.state == "Discarded":
 		raise ValueError("Existing run cannot receive this publication")
-	if record.state == "Rejected":
+	if record.state in ("Rejected", api.AWAITING, api.PROPOSED):
 		return None
 	verify_publication(dest, run)
 	return record
@@ -221,7 +221,11 @@ def stage(path: str, run: str):
 				raise ValueError(f"Incoming delegation already contains {dt} records")
 		if frappe.db.get_value(
 			api.RUN,
-			{"context_id": context, "state": ["not in", ("Discarded", "Rejected")]},
+			{
+				"context_id": context,
+				"state": ["not in", ("Discarded", "Rejected", api.PROPOSED)],
+				"name": ["!=", run],
+			},
 			"name",
 			for_update=True,
 		):

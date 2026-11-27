@@ -131,7 +131,7 @@ def attach_picture_bytes(person, source_file, content, *, folder=None, insert=in
 def insert_person(source, target, record, private_root, cache):
 	import frappe
 
-	frappe.only_for("System Manager")
+	frappe.only_for("Migration Admin")
 	parent, children, files = record
 	row = dict(parent)
 	map_terms(source, target, row, "Person", cache)

@@ -21,7 +21,7 @@ def apply_place(source, key, mappings):
 	import frappe
 	from ucm.permissions import profiles
 
-	frappe.only_for("System Manager")
+	frappe.only_for("Migration Admin")
 	with source.cursor(pymysql.cursors.DictCursor) as c:
 		c.execute("select * from tabPlace where name=%s", key)
 		raw = c.fetchone()

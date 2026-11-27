@@ -17,6 +17,8 @@ CLEANING = "Publication cleaning"
 ACTIVATED = "Activated"
 DISCARDED = "Discarded"
 REJECTED = "Rejected"
+AWAITING = "Awaiting publication"
+PROPOSED = "Proposed"
 # what the first unfinished step is doing, by the run's state
 _UNFINISHED = {
 	APPLYING: "running",
@@ -133,6 +135,12 @@ def steps(
 	state, staged = run["state"], timeline.get("stage", {})
 	if state == REJECTED:
 		return [_step("stage", "failed", staged.get("seconds"), report.get("preflight"))]
+	if state in (AWAITING, PROPOSED):
+		# proposed, or approved with its file on the way: nothing else has begun
+		arriving = run.get("approval") or {}
+		status = "running" if arriving.get("arrived") else "waiting"
+		later = [_step(name, "waiting") for name in ("write", "verify", "activate")]
+		return [_step("stage", status, None, arriving), *later]
 	sealed = {"batches": run["batches"], "rows": run["rows"], "tables": run["tables"]}
 	out = [_step("stage", "done", staged.get("seconds"), sealed)]
 	business = staged.get("business_batches") or report.get("committed_business_batches")
@@ -254,6 +262,7 @@ def _parts(record) -> tuple:
 	report, timeline = _json(record.reconciliation_json), _json(record.get("timeline_json"))
 	progress, handover = _json(record.get("reconcile_counts")), _json(record.get("quality_json"))
 	run = {
+		"approval": _approval(record) if record.state in (AWAITING, PROPOSED) else None,
 		"state": record.state,
 		"route": route_of(_json(record.write_plan_json)),
 		"batches": record.received,
@@ -276,6 +285,41 @@ def _handed_over(record, report: dict, run: dict, run_steps: list[dict], handove
 	from ucm_migration_loader.contract import digest
 
 	return digest(_metrics(record, report, run, run_steps)["metrics"]) == handover["sha256"]
+
+
+def _approval(record) -> dict:
+	"""Who approved a publication that waits for its file, for whom, and how much of the file has arrived."""
+	from ucm_migration_loader.publication_transport import folder, progress
+
+	approval = _json(record.get("approval_json"))
+	out = {key: approval.get(key) for key in ("by", "on", "publisher", "proposed_by", "proposed_on")}
+	out["bytes"] = approval.get("size")
+	out["arrived"] = 0
+	if (
+		record.state == AWAITING
+		and (folder(record.name) / "approval.json").is_file()
+		and approval.get("size")
+	):
+		out["arrived"] = progress(folder(record.name), {**approval, "run": record.name, "site": ""})["offset"]
+	return out
+
+
+def _people(record) -> dict:
+	"""Who proposed, approved and staged a run, and when. A run staged without an approval was made by its
+	staging, so its record's author and date are the staging's."""
+	approval, stage = _json(record.get("approval_json")), _json(record.get("timeline_json")).get("stage", {})
+	out = {
+		"proposed_on": approval.get("proposed_on"),
+		"proposed_by": approval.get("proposed_by"),
+		"approved_on": approval.get("on"),
+		"approved_by": approval.get("by"),
+		"staged_on": stage.get("at") if stage.get("by") else None,
+		"staged_by": stage.get("by"),
+	}
+	if not approval and record.state not in (AWAITING, PROPOSED):
+		out["staged_on"] = out["staged_on"] or str(record.creation)
+		out["staged_by"] = out["staged_by"] or record.owner
+	return out
 
 
 def build(record) -> dict:
@@ -302,10 +346,9 @@ def build(record) -> dict:
 		"records": records(manifest.get("counts") or {}, report, record.state == ACTIVATED),
 		"findings": data_quality.findings(report),
 		"facts": {
-			"route": None if record.state == REJECTED else run["route"],
+			"route": None if record.state in (REJECTED, AWAITING, PROPOSED) else run["route"],
 			"snapshot": record.snapshot_id,
-			"started_on": str(record.creation),
-			"started_by": record.owner,
+			**_people(record),
 			"publishing_user": record.publishing_user,
 			"versions": manifest.get("application_versions") or {},
 		},
@@ -322,7 +365,9 @@ def refresh(run: str) -> None:
 	record = frappe.get_doc(api.RUN, run)
 	manifest = _json(record.manifest_json)
 	# a refused publication was given no route; a run without a measured step shows no time
-	route = None if record.state == REJECTED else route_of(_json(record.write_plan_json))
+	route = (
+		None if record.state in (REJECTED, AWAITING, PROPOSED) else route_of(_json(record.write_plan_json))
+	)
 	values = {"delegation": _delegation(record.context_id), "write_route": route}
 	if is_publication(manifest):
 		values["duration"] = round(duration(_parts(record)[3])) or None
@@ -347,7 +392,9 @@ def note(run: str, step: str, seconds: float | None = None, **facts) -> None:
 
 def staged(run: str, seconds: float, business_batches: int) -> None:
 	"""A run has just been staged: keep how long that took and where its business batches end."""
-	note(run, "stage", seconds, business_batches=business_batches)
+	import frappe
+
+	note(run, "stage", seconds, business_batches=business_batches, by=frappe.session.user)
 	refresh(run)
 
 
