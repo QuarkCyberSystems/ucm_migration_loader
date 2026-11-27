@@ -8,7 +8,9 @@ Migrate one delegation from a published MariaDB snapshot into a shared UCM site.
 | Receiving site | Frappe app and migration worker | The site's existing database and private file storage. A System Manager approves transfers and controls apply, pause, discard and activation |
 | Desk | UCM Migration Run, UCM Migration Batch, UCM Migration Held Share | Operators review progress, write routes, committed batches, reconciliation and historical shares |
 
-[Install](#install) · [Prepare and send a delegation](#prepare-and-send-a-delegation) · [Operate the run in Desk](#operate-the-run-in-desk) · [Set-based SQL route](#set-based-sql-route) · [All CLI commands](#all-cli-commands) · [Recovery](#recovery)
+**Operating a migration?** The [user manual](docs/user-manual.html) takes the publishing operator, the site operator and the migration team through a delegation step by step, with pictures of every screen. Open the file in a browser. This README is the technical reference.
+
+[Install](#install) · [The short way](#the-short-way) · [Prepare and send a delegation](#prepare-and-send-a-delegation) · [Operate the run in Desk](#operate-the-run-in-desk) · [Set-based SQL route](#set-based-sql-route) · [All CLI commands](#all-cli-commands) · [Recovery](#recovery)
 
 ## Install
 
@@ -42,9 +44,45 @@ Register the queue under the existing `workers` object in the bench's `sites/com
 bench worker --queue ucm_migration
 ```
 
+## The short way
+
+Both operators have a short form of their commands. It does what the detailed commands of the next section do, in fewer steps, and answers in sentences.
+
+**Publishing operator.** Write the host's settings once, as `ucm-push.toml` in the folder you work from (or name the file with `--config` or `UCM_PUSH_CONFIG`). It holds what is the same for every delegation, and names the private files that hold the password and the token.
+
+```toml
+site = "ucm.example.org"                                    # the receiving site, as its bench names it
+url = "https://ucm.example.org"                             # its HTTPS address
+source_config = "/srv/migration/credentials/source.json"    # read-only database connection (PyMySQL)
+private_files = "/srv/publication/private/files"            # the pictures of the published persons
+publications = "/srv/migration/publications"                # a folder per snapshot is made here
+token_file = "/srv/migration/credentials/ucm-token"         # key:secret of the publishing account, mode 600
+quality_config = "/etc/ucm-migration/quality-db.json"       # optional: the data quality database
+```
+
+```sh
+ucm-push seal DEMO01                # by the delegation's code: inventory, sealed file and hand-off, in a new folder
+ucm-push send DEMO01-2026-11-27     # after the site operator's approval; run it again after an interruption
+ucm-push status DEMO01-2026-11-27   # where the run stands on the site
+ucm-push quality DEMO01-2026-11-27  # the run's metrics, to metrics.csv in the folder and to the database named
+```
+
+`seal` names the snapshot after the code and the date, and never reuses a name. The later commands take the snapshot's name, or nothing when run from inside its folder: the run is read from the hand-off there. `ucm-push sent` shows how far a transfer got. `ucm-push --help-settings` describes the settings file.
+
+**Site operator.** On the bench of the receiving site:
+
+```sh
+bench --site ucm.example.org ucm-migration approve /srv/approved/DEMO01/handoff.json --publisher publisher@example.org
+bench --site ucm.example.org ucm-migration stage /srv/approved/DEMO01/handoff.json
+```
+
+`stage` says how it went: staged under a short ID, refused with the reason (the refused run is kept), or not arrived completely.
+
+**Sentences or JSON.** At a terminal the commands answer in sentences. Redirected or piped, they answer in JSON, as scripts expect; `--json` and `--text` choose outright. `tests/operator_flow.py` runs this whole way with the real commands over TLS.
+
 ## Prepare and send a delegation
 
-The following example uses Bash, `jq`, and a synthetic context UUID. Replace the example host, UUID, paths and accounts with the values for the delegation. Use a new private working directory for each snapshot.
+The detailed commands take every value as an option, for scripts and for cases the short way does not cover. The following example uses Bash, `jq`, and a synthetic context UUID. Replace the example host, UUID, paths and accounts with the values for the delegation. Use a new private working directory for each snapshot.
 
 ### 1. Prepare the receiving context
 
@@ -228,6 +266,8 @@ These examples reuse the Bash arrays and variables from steps 2 and 3. For opera
 
 | Command | What it does | Example |
 |---|---|---|
+| `seal` | Short way: inventory, sealed file and hand-off for one delegation, by its code | `ucm-push seal DEMO01` |
+| `send`, `sent` | Short names of `send-publication` and `transfer-status` | `ucm-push send DEMO01-2026-11-27` |
 | `source-inventory` | Count source rows and identify unsupported business rows | `ucm-push source-inventory "${src[@]}"` |
 | `upload-order` | Preview activity dependency order and batch planning | `ucm-push upload-order "${src[@]}" --batch-size 1000` |
 | `prepare` | Write a sealed delegation publication to a new file | `ucm-push prepare "${src[@]}" --private-files "$PRIVATE_FILES" --publication-out "$PUBLICATION" --batch-size 1000 --batch-bytes 4194304` |
@@ -333,9 +373,10 @@ Three kinds, each run where it fits. Synthetic data only.
 | Integration tests | `ucm_migration_loader/tests/` and beside the DocType | `bench --site SITE run-tests --app ucm_migration_loader` | a site with ucm and the loader installed |
 | Rehearsals and browser tests | the other files of `tests/`, and `e2e/` | by hand, from the bench; see [REHEARSALS.md](REHEARSALS.md) | a development site that is being served, with a worker and generator data |
 
-- The unit tests cover what needs no site: the pilot contract, the sealed file's index, the set-based route's planning, the run's overview and metrics, and `ucm-push quality` with the site's answers played back.
+- The unit tests cover what needs no site: the pilot contract, the sealed file's index, the set-based route's planning, the run's overview and metrics, `ucm-push quality` with the site's answers played back, and the short commands with their settings file.
 - The integration tests cover what the site decides: who may read a run and its metrics, the hand-over record, a sealed file that is refused for each reason and staged again afterwards, the account a transfer names, the list's columns, and what the form shows in every state. They build their own runs and a small sealed file by hand, roll everything back and remove the files they stage, so they can run on a site that holds loaded delegations. They do not load a delegation: a load commits, and is rehearsed instead.
 - The rehearsals load, verify, hand over, activate and discard real generator delegations through the bench's own worker, and the browser tests drive the Desk form through the same steps.
+- `e2e/manual_screenshots.py` takes the pictures of the user manual from runs in the situations it describes, into `docs/images/user-guide/`; the manual embeds them.
 - `tests/set_based_kill.py` ends the job of a set-based load at seven points (inside a write transaction, between two, during the derive, the verification, the conclusion, the activation and the discard), by killing its process or cutting its database connection, and checks what is left and that the resumed load is the same as an undisturbed one.
 
 **When UCM changes a rule.** The set-based route states UCM's save rules again as queries, so a rule UCM adds or changes has to be followed. Two integration tests watch for it (`ucm_migration_loader/tests/test_rules_against_ucm.py`), and the CI runs them every night against UCM's develop branch:
