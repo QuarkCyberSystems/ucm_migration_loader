@@ -15,7 +15,14 @@ from pathlib import Path
 import pymysql
 
 from .activity_order import DEPENDENCIES, activity_batches
-from .contract import MAX_PUBLICATION_BATCH_DOCUMENTS, check_uuid, digest, encoded, table_signatures
+from .contract import (
+	MAX_PUBLICATION_BATCH_BYTES,
+	MAX_PUBLICATION_BATCH_DOCUMENTS,
+	check_uuid,
+	digest,
+	encoded,
+	table_signatures,
+)
 from .dictionary_identity import TERM_FIELDS
 from .scope import MISSING_PLACE
 
@@ -338,7 +345,7 @@ def freeze(
 	ucm_version=None,
 ):
 	check_uuid(context)
-	if not 1 <= size <= MAX_PUBLICATION_BATCH_DOCUMENTS or not 1 <= byte_limit <= 4 * 1024 * 1024:
+	if not 1 <= size <= MAX_PUBLICATION_BATCH_DOCUMENTS or not 1 <= byte_limit <= MAX_PUBLICATION_BATCH_BYTES:
 		raise ValueError("Invalid publication batch limits")
 	if output.exists():
 		raise FileExistsError(output)

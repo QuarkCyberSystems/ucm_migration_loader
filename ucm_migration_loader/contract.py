@@ -5,7 +5,11 @@ import re
 from hashlib import sha256
 from uuid import UUID
 
+# the largest batch a sealed publication holds, which is also what a publication is sealed with by default
 MAX_PUBLICATION_BATCH_DOCUMENTS = 1000
+MAX_PUBLICATION_BATCH_BYTES = 4 * 1024 * 1024
+# the pieces a sealed file travels in: the sender cuts them, and the site checks every offset against them
+TRANSFER_CHUNK = 512 * 1024
 OTHER_NAMES = (
 	"person_other_name",
 	"person_other_name_type",

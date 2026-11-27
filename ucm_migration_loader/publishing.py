@@ -37,10 +37,14 @@ import tomllib
 from datetime import date
 from pathlib import Path
 
+from .contract import MAX_PUBLICATION_BATCH_BYTES, MAX_PUBLICATION_BATCH_DOCUMENTS
+
 SETTINGS = "ucm-push.toml"
 HANDOFF, SEALED = "handoff.json", "delegation.sqlite"
 ALIASES = {"send": "send-publication", "sent": "transfer-status"}
 # the commands that work on one run of one sealed publication
+# the commands that work on the publishing host alone: they need no address of the site and no token
+LOCAL = ("source-inventory", "upload-order", "prepare", "check-publication", "locate-item")
 ON_A_RUN = ("propose", "send-publication", "transfer-status", "status", "report", "quality", "locate-item")
 STATE = {
 	"Proposed": "Proposed: the site's migration team has not approved it yet",
@@ -177,12 +181,17 @@ def _own_options(argv: list[str], terminal: bool) -> tuple[list[str], bool, str 
 		if flag in argv:
 			argv.remove(flag)
 			readable = value
-	if "--config" in argv:
-		at = argv.index("--config")
-		if at + 1 >= len(argv):
-			raise Stop("--config takes the path of a settings file")
-		named = argv[at + 1]
-		del argv[at : at + 2]
+	for at, arg in enumerate(argv):
+		if arg.startswith("--config="):
+			named = arg.split("=", 1)[1]
+			del argv[at]
+			break
+		if arg == "--config":
+			if at + 1 >= len(argv):
+				raise Stop("--config takes the path of a settings file")
+			named = argv[at + 1]
+			del argv[at : at + 2]
+			break
 	return argv, readable, named
 
 
@@ -215,7 +224,8 @@ def fill(argv: list[str], terminal: bool) -> tuple[list[str], bool]:
 	action = argv[0] = ALIASES.get(argv[0], argv[0])
 	target = argv.pop(1) if len(argv) > 1 and not argv[1].startswith("-") else None
 	conf, _path = settings(named)
-	credentials(conf)
+	if action not in LOCAL:
+		credentials(conf)
 	for option in ("site", "url"):
 		if conf.get(option) and not _has(argv, f"--{option}"):
 			argv += [f"--{option}", str(conf[option])]
@@ -258,6 +268,11 @@ def sentences(action: str, result: dict) -> str | None:
 			f"{_megabytes(result['offset'])} of {_megabytes(result['size'])} sent ({share:.0%}), {done}."
 		)
 	if action == "send-publication":
+		if result["offset"] < result["size"]:
+			return (
+				f"Sent so far: {_megabytes(result['offset'])} of {_megabytes(result['size'])}. "
+				"Run the command again to send the rest."
+			)
 		return (
 			f"Sent: {_megabytes(result['size'])}, all of it. "
 			f"The site stages run {_short(result['run'])} by itself: ucm-push status shows when."
@@ -355,13 +370,18 @@ def seal(conf: dict, delegation: str, snapshot: str | None = None, today: date |
 				conf["site"],
 				snapshot,
 				identifier,
-				int(conf.get("batch_size", 1000)),
-				int(conf.get("batch_bytes", 4 * 1024 * 1024)),
+				int(conf.get("batch_size", MAX_PUBLICATION_BATCH_DOCUMENTS)),
+				int(conf.get("batch_bytes", MAX_PUBLICATION_BATCH_BYTES)),
 				folder / "findings.jsonl",
 				ucm_version=conf.get("ucm_version"),
 			)
 		except ValueError as refused:
 			raise Stop(f"{code} was not sealed: {refused}. See {folder} for what was found.") from None
+		except FileNotFoundError as missing:
+			# the folder of the private files, or the picture of a published person
+			raise Stop(
+				f"{code} was not sealed: {missing.filename} is missing. Check private_files in the settings."
+			) from None
 	manifest = verify_publication(folder / SEALED, published["run"])
 	with (folder / SEALED).open("rb") as file:
 		fingerprint = hashlib.file_digest(file, "sha256").hexdigest()

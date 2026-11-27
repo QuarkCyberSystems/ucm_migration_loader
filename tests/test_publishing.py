@@ -442,3 +442,63 @@ def test_the_repositorys_samples_are_the_files_init_writes():
 	shown = Path(__file__).resolve().parents[1] / "samples"
 	for name, text in publishing.samples("/srv/migration").items():
 		assert (shown / name).read_text() == text, name
+
+
+# --- what goes wrong, said before any work and in a sentence ----------------------------------------------------
+
+
+def test_a_transfer_that_stopped_early_is_not_said_to_be_whole():
+	receipt = {"run": RUN, "site": "s", "size": 295_000_000, "sha256": "f" * 64, "offset": 118_000_000}
+	told = publishing.sentences("send-publication", receipt)
+	assert told == "Sent so far: 118.0 MB of 295.0 MB. Run the command again to send the rest."
+
+
+def test_a_command_for_the_site_asks_for_the_token_before_it_works(host, monkeypatch, capsys):
+	monkeypatch.setattr(push, "hand_over_quality", lambda *_: pytest.fail("the command went to work"))
+	with pytest.raises(SystemExit) as stopped:
+		site = ["--site", "target.example", "--url", "https://target.example"]
+		push.run(["quality", *site, "--run", RUN, "--quality-out", str(host / "metrics.csv")])
+	assert stopped.value.code == 2 and "UCM_MIGRATION_TOKEN" in capsys.readouterr().err
+	monkeypatch.setenv("UCM_MIGRATION_TOKEN", "key:secret")
+	with pytest.raises(SystemExit):
+		push.run(["status", "--site", "target.example", "--url", "http://target.example", "--run", RUN])
+	assert "HTTPS" in capsys.readouterr().err
+
+
+def test_a_command_of_the_host_alone_needs_no_token(host):
+	settings = host / "ucm-push.toml"
+	settings.write_text(settings.read_text() + f'token_file = "{host / "no-such-token"}"\n')
+	argv, _ = publishing.fill(["locate-item", "DEMO01-2026-01-02", "--sequence", "1", "--item", "1"], False)
+	assert option(argv, "--run") == RUN
+	with pytest.raises(publishing.Stop, match="Token file not found"):
+		publishing.fill(["status", "DEMO01-2026-01-02"], False)
+
+
+def test_the_settings_file_is_named_either_way(host, tmp_path):
+	other = tmp_path / "other.toml"
+	other.write_text('site = "other.example"\nurl = "https://other.example"\n')
+	for named in (["--config", str(other)], [f"--config={other}"]):
+		argv, _ = publishing.fill(["status", *named, "--run", RUN], False)
+		assert option(argv, "--site") == "other.example" and not any("--config" in arg for arg in argv)
+
+
+def test_a_missing_picture_is_said_in_a_sentence(sealing, monkeypatch):
+	from ucm_migration_loader import frozen
+
+	def freeze(*_args, **_options):
+		raise FileNotFoundError(2, "No such file or directory", "/srv/publication/private/files/p.jpg")
+
+	monkeypatch.setattr(frozen, "freeze", freeze)
+	conf, _ = publishing.settings(None)
+	with pytest.raises(publishing.Stop, match=r"DEMO01 was not sealed: .*p\.jpg is missing"):
+		publishing.seal(conf, "DEMO01")
+
+
+def test_both_ways_of_sealing_use_the_same_batches(sealing):
+	from ucm_migration_loader import contract
+
+	_host, calls, _source = sealing
+	conf, _ = publishing.settings(None)
+	publishing.seal(conf, "DEMO01")
+	assert calls["freeze"]["size"] == contract.MAX_PUBLICATION_BATCH_DOCUMENTS
+	assert contract.TRANSFER_CHUNK == 512 * 1024

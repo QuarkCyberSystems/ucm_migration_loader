@@ -13,7 +13,13 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .contract import check_code, digest
+from .contract import (
+	MAX_PUBLICATION_BATCH_BYTES,
+	MAX_PUBLICATION_BATCH_DOCUMENTS,
+	TRANSFER_CHUNK,
+	check_code,
+	digest,
+)
 
 
 def hand_over_quality(call, args):
@@ -66,7 +72,7 @@ def main():
 
 def run(argv: list[str] | None = None, readable: bool = False):
 	"""One detailed command, every value an option. `readable`: answer in sentences where the command has some."""
-	from .publishing import show
+	from .publishing import LOCAL, show
 
 	parser = argparse.ArgumentParser(
 		prog="ucm-push",
@@ -132,8 +138,8 @@ def run(argv: list[str] | None = None, readable: bool = False):
 		action="store_true",
 		help="Print sealed transfer byte checkpoints on stderr",
 	)
-	parser.add_argument("--batch-size", type=int, default=100)
-	parser.add_argument("--batch-bytes", type=int, default=256 * 1024)
+	parser.add_argument("--batch-size", type=int, default=MAX_PUBLICATION_BATCH_DOCUMENTS)
+	parser.add_argument("--batch-bytes", type=int, default=MAX_PUBLICATION_BATCH_BYTES)
 	parser.add_argument(
 		"--quality-out",
 		type=Path,
@@ -167,6 +173,15 @@ def run(argv: list[str] | None = None, readable: bool = False):
 		args.action not in ("apply", "send-publication") or args.max_batches < 1
 	):
 		parser.error("--max-batches requires apply or send-publication and a positive limit")
+	if args.action not in LOCAL:
+		# before any work: a transfer verifies the whole file first, and would fail only afterwards
+		if not args.url or urlsplit(args.url).scheme != "https":
+			parser.error("Set --url to the target HTTPS base URL")
+		if not os.environ.get("UCM_MIGRATION_TOKEN"):
+			parser.error(
+				"Set UCM_MIGRATION_TOKEN to the publishing account's key:secret, or name its file as "
+				"token_file in the settings"
+			)
 	if args.action == "locate-item":
 		from .frozen import locate_item
 
@@ -214,8 +229,6 @@ def run(argv: list[str] | None = None, readable: bool = False):
 	)
 
 	def call(method, **data):
-		if not args.url or urlsplit(args.url).scheme != "https":
-			parser.error("Set --url to the target HTTPS base URL")
 		module = "publication_transport" if args.action in ("send-publication", "transfer-status") else "api"
 		response = session.post(
 			f"{args.url.rstrip('/')}/api/method/ucm_migration_loader.{module}.{method}",
@@ -258,7 +271,7 @@ def run(argv: list[str] | None = None, readable: bool = False):
 			) != (checksum, size, args.site, args.run):
 				raise ValueError("Target approval differs from the publication")
 			offset = receipt["offset"]
-			chunk_size = 512 * 1024
+			chunk_size = TRANSFER_CHUNK
 			if not 0 <= offset <= size or (offset != size and offset % chunk_size):
 				raise ValueError("Invalid transfer checkpoint")
 			publication_file.seek(offset)
