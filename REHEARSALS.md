@@ -444,6 +444,35 @@ On three small generator delegations of the development site, one run each. The 
 
 A discard of a 1,000-person document-route run took 29 to 39 s through the worker. Runs loaded before the batch receipts kept their rows and times show their batches only.
 
+**A job that is killed.** `tests/set_based_kill.py` carries a staged publication through the queue's jobs, each in a process of its own as a worker runs them, and ends the job at seven points. After each one it reads what is left, asks for the load again as an operator resumes it, and lets the next job go on. `--kill process` kills the job's process; `--kill connection` cuts its database connection and lets it run into the error. `worker` kills the job of the bench's own worker instead, at given seconds into the job. The worker itself is never killed.
+
+```sh
+env/bin/python apps/ucm_migration_loader/tests/set_based_kill.py points --site "$TARGET_SITE" --run "$RUN_ID" --publication "$PUBLICATION" --kill process --write-call 2 --verify-call 100
+env/bin/python apps/ucm_migration_loader/tests/set_based_kill.py points --site "$TARGET_SITE" --run "$OTHER_RUN_ID" --publication "$OTHER_PUBLICATION" --kill connection --write-call 2 --verify-call 100
+env/bin/python apps/ucm_migration_loader/tests/set_based_kill.py worker --site "$TARGET_SITE" --run "$THIRD_RUN_ID" --publication "$THIRD_PUBLICATION" --after 20 25 12 20
+```
+
+On the 10,000-person delegation (242,786 rows in 222 batches; sealed from the rows the development site held, so without its assignments and shares), one run each. After every ended job the stored rows were exactly those of the batches with a receipt, and the run and its context could be locked again within a second.
+
+| Where the job ended | Process killed | Connection cut |
+|---|---|---|
+| Write, rows of a transaction inserted and not committed | 4 batches and 3,381 rows kept, the open transaction's rows gone | the same, and the run paused with `apply after committed batch 4: OperationalError` |
+| Write, between two transactions | 9 batches, 16,906 rows | the same, paused with the batch in the finding |
+| Derive, between two of UCM's rebuilds | all 222 batches written; the derive ran again from its start | the same, paused |
+| Verify, after a kept cursor | 99 of 222 batches compared; the next job went on at batch 100 | the same, paused |
+| Conclude, rules checked and report not kept | no report, no state change; concluded again | the same, paused |
+| The resumed load | ready, no finding, 242,786 rows compared, each once; 244 rules, 4,305 sampled records | the same |
+| Activate, before its commit | still ready, context locked and hidden, no access row or share receipt left; the activation then went through (rolled back) | the same, with the failure in the finding |
+| Discard, between two chunks | cleaning, 241,986 of 242,786 rows left; the next request removed them all | the same |
+
+Both resumed loads were compared with the undisturbed load of the same delegation by `set_based_comparison.py diff`: 242,786 identical rows, none only on one side, no field differing.
+
+A killed process says nothing, so the run stayed in **Publication applying** with no finding. The form now looks such a run up in the migration queue and says that no job is working on it. A job that loses its connection takes a new one to pause the run with what failed; before this rehearsal it left no trace either.
+
+Through the bench's own worker, the job was killed 20, 25 and 12 seconds into three successive jobs of one load, at 48, 179 and 220 committed batches. Each time the worker stayed up, the queue filed the job as failed, the form said that no job was on the run, and the next request went on; a fourth kill found its job already finished. The load ended ready with every row compared once. For this run the sampled document checks were switched off (`ucm_migration_sample_every`): the bench's long-running worker had not loaded a UCM change made that day and failed on every File record it read, which is the bench's state and not the route's. The delegation was then loaded again with the checks on (4,305 records) and compared: identical.
+
+Not rehearsed: the worker process itself going down (on this bench every process stops with it), the database server stopping, and an activation that had released assignments and shares when it was ended.
+
 ### Re-keyed generator sources
 
 The generator computes its record keys from an entity code and a sequence number, so two sites it filled hold the same keys, and a delegation of one cannot be published to the other as it is. `tests/rekeyed_source.py` reads a generator source through a view that moves every key a delegation owns to a key space of its own and leaves the shared reference data (countries, areas, places, shared activity types) under the keys both sites know. Nothing is written to the source.

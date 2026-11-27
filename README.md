@@ -56,13 +56,15 @@ bench --site "$TARGET_SITE" console
 
 ```python
 context_id = "b9d729a1-eeb8-45f5-93b7-12ca51bc447b"
-ctx = frappe.get_doc({
-    "doctype": "Context",
-    "context_code": "DEMO01",
-    "context_name": "Synthetic delegation",
-    "context_status": "Locked",
-    "context_discoverability": "Hidden",
-}).insert(set_name=context_id)
+ctx = frappe.get_doc(
+	{
+		"doctype": "Context",
+		"context_code": "DEMO01",
+		"context_name": "Synthetic delegation",
+		"context_status": "Locked",
+		"context_discoverability": "Hidden",
+	}
+).insert(set_name=context_id)
 assert ctx.name == context_id
 frappe.db.commit()
 ```
@@ -149,6 +151,8 @@ A run's form opens on an overview, read from what the run keeps and refreshed ev
 - **Run**: delegation, route, snapshot, who staged it and when, the application versions the publication was made with.
 - **Records**: the rows of each table in the publication and in UCM, and their difference. Assignments and shares are held until activation; afterwards the table shows how many were released and how many shares are kept for delegations that are not live yet.
 - **Findings**, when a verification found something: the check, the table, the rows, a severity and the first place in the publication (batch and item). No record ID and no field value is shown. Resolve a place on the publishing host with `ucm-push locate-item`.
+
+A load or a discard whose job is gone says so in red above the overview, with the batch it had reached: the form looks the run up in the migration queue once its worker has been quiet for a minute. The list keeps showing **Loading**; open the run to see it.
 
 A run that waits for the go-live decision says so above the overview and offers **Activate delegation** as its main button. The form has no **Save**: a run changes through its actions only.
 
@@ -262,6 +266,8 @@ For the pilot, use the run digest from `plan` in `remote`. The receiving operato
 | Source data needs correction | Review and discard the hidden run, correct the source, then prepare a new full publication with a new snapshot identity. For the bounded pilot, increment `--attempt`. |
 | Write-route menu missing | Open a full **Publication staged** run before its first apply request. |
 | Staging refused | Open the **Refused** run the staging left: its first step says what differs. Correct the site (release, reference data) or prepare a new publication, then stage again. |
+| The form says **No job is working on this load** (or discard) | The job's process was killed or its worker went down. The run kept its state and nothing is half written: every batch with a receipt is stored whole, and the rows of the batch that was being written are gone. Choose **Migration → Resume from last receipt** (or **Resume cleanup**): the load goes on after the last receipt, and the verification after the last batch it had compared. |
+| Paused with `apply after committed batch N: OperationalError` | The job lost its database connection, and took a new one to record it. Check the database, then **Resume from last receipt**. |
 | Set-based run paused with **Verification found** | Open the run: **Findings** lists each check with its severity, and each field that differs with the batch and item of its first occurrence; resolve it with `locate-item`. The downloaded report holds the same under `findings`. Correct the cause and resume: the delegation is derived and verified again from the first batch. If the publication itself is wrong, discard the run. |
 | Ready but some batches remain | Inspect the report's deferred access counts. Eligible assignments and shares are handled during activation. |
 
@@ -293,7 +299,7 @@ Everything else is operated as before: **Apply hidden batches**, **Pause after c
 | Writing *DocType* | Inserts the rows of up to 5,000 parent records per transaction, with their child rows, private pictures and batch receipts. Sensitivity tags are saved through their documents | After the last committed batch |
 | Deriving | Sets the values a save would derive, for this delegation only: an activity's place type, country and areas from its Place, the department and country copies on history rows and notes, the share facts and the latest-state marks | Runs again; rows that already hold the value are not written |
 | Verifying | Compares every stored column with the publication, batch by batch, and passes one record in fifty through the document route's own check | After the last compared batch |
-| Ready for activation | Counts the delegation, counts the rows that break a rule a query can check (required fields, options, links, option sets and collections, links that leave the context, places, history locks), and compares the receipts with the publication. With no finding the run becomes **Publication ready** and the report can be downloaded | — |
+| Ready for activation | Counts the delegation, counts the rows that break a rule a query can check (required fields, options, links, option sets and collections, links that leave the context, places, a relationship recorded twice, history locks), and compares the receipts with the publication. With no finding the run becomes **Publication ready** and the report can be downloaded | — |
 
 ![A set-based run at Publication ready, with its write route, phase and the Activate delegation action](docs/screenshots/set-based-ready.png)
 
@@ -310,6 +316,8 @@ bench --site "$TARGET_SITE" set-config ucm_migration_sample_every 10 --parse
 Know these limits before choosing the route:
 
 - No controller runs for a copied row. A controller rule that is not in the verification's list is checked on the sampled records only.
+- The verification's list is a reading of UCM's rules as they were when the route was reviewed. The app's tests read the code a save runs in UCM for every table the route writes, and fail when it differs from the reviewed one (`ucm_rules.py`, `ucm_rules_reviewed.json`); see [Tests](#tests). A UCM that has changed since is reviewed before the route is used with it.
+- The route runs on a UCM with or without the home's record counts (`ucm.permissions.counts`): where UCM keeps them, they move with the rows written or removed.
 - A private picture keeps its published file name. The document routes may store the same bytes under another name.
 - Assignments and shares are released in one transaction at activation, as on the document routes. A delegation with 11,000 shares had an activation of about three minutes.
 - A share that UCM's current rules no longer allow stops the verification, with its batch and item in the finding. Correct the consent or the publication and resume.
@@ -328,6 +336,19 @@ Three kinds, each run where it fits. Synthetic data only.
 - The unit tests cover what needs no site: the pilot contract, the sealed file's index, the set-based route's planning, the run's overview and metrics, and `ucm-push quality` with the site's answers played back.
 - The integration tests cover what the site decides: who may read a run and its metrics, the hand-over record, a sealed file that is refused for each reason and staged again afterwards, the account a transfer names, the list's columns, and what the form shows in every state. They build their own runs and a small sealed file by hand, roll everything back and remove the files they stage, so they can run on a site that holds loaded delegations. They do not load a delegation: a load commits, and is rehearsed instead.
 - The rehearsals load, verify, hand over, activate and discard real generator delegations through the bench's own worker, and the browser tests drive the Desk form through the same steps.
+- `tests/set_based_kill.py` ends the job of a set-based load at seven points (inside a write transaction, between two, during the derive, the verification, the conclusion, the activation and the discard), by killing its process or cutting its database connection, and checks what is left and that the resumed load is the same as an undisturbed one.
+
+**When UCM changes a rule.** The set-based route states UCM's save rules again as queries, so a rule UCM adds or changes has to be followed. Two integration tests watch for it (`ucm_migration_loader/tests/test_rules_against_ucm.py`), and the CI runs them every night against UCM's develop branch:
+
+- *The code a save runs.* For each table the route writes, the hooks of UCM's controller and the UCM functions they call are fingerprinted (comments and layout aside) and compared with `ucm_rules_reviewed.json`. A difference fails the test and names what is new, gone or changed. Read the change, add or adjust the rule in `set_based` where the route copies it, then keep the new reading:
+
+  ```sh
+  bench --site DEVELOPER_SITE execute ucm_migration_loader.ucm_migration_loader.ucm_rules.review
+  ```
+
+- *The same records, read both ways.* Records saved through UCM's documents must break none of the route's rules; a record UCM's document refuses (a value outside its options or its list, a required field left empty, a link to another context's record, a place its activity type does not allow, a relationship recorded twice) must be found by the rule that names it; and the place type and address a save gives an activity must be what the route's derive step gives it.
+
+The fingerprint follows a hook and the functions it calls directly, not what those call in turn.
 
 `.github/workflows/ci.yml` runs the unit tests and, on MariaDB 11.8 and Frappe version-16, the integration tests. The integration tests need ucm, whose repository is private: set the repository secret `UCM_CLONE_URL` to a clone URL that can read it, or that job is skipped with a warning. `.github/workflows/linters.yml` runs the commit-title check, pre-commit (ruff, prettier, eslint), Frappe's Semgrep rules and pip-audit on every pull request. Run `pre-commit run --all-files` before committing.
 
