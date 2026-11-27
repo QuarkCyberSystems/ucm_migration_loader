@@ -8,7 +8,7 @@ Migrate one delegation from a published MariaDB snapshot into a shared UCM site.
 | Receiving site | Frappe app and migration worker | The site's existing database and private file storage. A System Manager approves transfers and controls apply, pause, discard and activation |
 | Desk | UCM Migration Run, UCM Migration Batch, UCM Migration Held Share | Operators review progress, write routes, committed batches, reconciliation and historical shares |
 
-[Install](#install) · [Prepare and send a delegation](#prepare-and-send-a-delegation) · [Operate the run in Desk](#operate-the-run-in-desk) · [All CLI commands](#all-cli-commands) · [Recovery](#recovery)
+[Install](#install) · [Prepare and send a delegation](#prepare-and-send-a-delegation) · [Operate the run in Desk](#operate-the-run-in-desk) · [Set-based SQL route](#set-based-sql-route) · [All CLI commands](#all-cli-commands) · [Recovery](#recovery)
 
 ## Install
 
@@ -132,7 +132,7 @@ At **Publication staged**, the receiver has verified the file and recorded the p
 
 ## Operate the run in Desk
 
-1. Search Desk for **UCM Migration Run** and open the staged run. Choose **Migration → Configure write routes**. Select **Validated bulk SQL** for Person and **Document API** for Person Note if that is your chosen plan. Click **Save routes**. All published parent DocTypes support either route. The saved plan locks once apply starts.
+1. Search Desk for **UCM Migration Run** and open the staged run. Choose **Migration → Configure write routes**. Either set **Route for the delegation** to **Set-based SQL**, which loads the whole delegation in sets (see [Set-based SQL route](#set-based-sql-route)), or leave it at **Chosen per DocType** and select, for example, **Validated bulk SQL** for Person and **Document API** for Person Note. Click **Save routes**. All published parent DocTypes support either per-DocType route. The saved plan locks once apply starts, and the form shows it as **Write route**.
 2. Choose **Migration → Apply hidden batches**. **Refresh progress** shows committed and remaining batches. **View batches** opens receipts for this run. Open an individual receipt to see its sequence, published DocType, actual write route and digest.
 3. At **Publication ready**, choose **Download report**. The worker compares counts, stored fields, child order, historical audit fields, attachments and references against the publication. Deferred assignments and shares are counted separately. A failed check blocks activation.
 4. After review, choose **Activate delegation**. Activation rechecks the import, releases eligible assignments and shares, and opens the context. **UCM Migration Held Share** records historical shares whose receiving delegation is inactive. UCM rechecks consent and eligibility when that delegation goes live.
@@ -191,9 +191,57 @@ For the pilot, use the run digest from `plan` in `remote`. The receiving operato
 | Apply interrupted | Check `status` or the run's **Finding**. Each successful business batch and its receipt commit together. Resume with `apply` after correcting the reported issue. |
 | Source data needs correction | Review and discard the hidden run, correct the source, then prepare a new full publication with a new snapshot identity. For the bounded pilot, increment `--attempt`. |
 | Write-route menu missing | Open a full **Publication staged** run before its first apply request. |
+| Set-based run paused with **Verification found** | Download the report and read `findings`. Each field that differs is listed with the batch and item of its first occurrence; resolve it with `locate-item`. Correct the cause and resume: the delegation is derived and verified again from the first batch. If the publication itself is wrong, discard the run. |
 | Ready but some batches remain | Inspect the report's deferred access counts. Eligible assignments and shares are handled during activation. |
 
 [Developer rehearsals, reference-data checks, test commands and benchmark procedures](REHEARSALS.md)
+
+## Set-based SQL route
+
+The document routes save every published record through its controller, about a hundred records a second. The set-based route copies the published rows into UCM's tables with multi-row inserts and applies the rules afterwards, over the whole delegation. On a 10,000-person delegation of 243,000 rows it reached **Publication ready** in three to four minutes where the document route took 49, with the same stored rows ([measurements](REHEARSALS.md#set-based-sql-route)).
+
+Choose it per run in **Configure write routes**, or from the receiving bench:
+
+```sh
+bench --site "$TARGET_SITE" execute ucm_migration_loader.write_routes.select \
+  --kwargs "$(jq -nc --arg run "$RUN_ID" '{run:$run, route:"Set-based SQL"}')"
+```
+
+![Desk dialog with Set-based SQL chosen as the route for the delegation](docs/screenshots/set-based-route.png)
+
+To make it the route every newly staged run starts with, set it on the site. An operator can still change a staged run before its first apply.
+
+```sh
+bench --site "$TARGET_SITE" set-config ucm_migration_route "Set-based SQL"
+```
+
+Everything else is operated as before: **Apply hidden batches**, **Pause after current batch**, **Resume from last receipt**, **Activate delegation** and **Discard run** in Desk, or `apply`, `pause`, `status`, `report`, `activate` and `discard` with `ucm-push`. The run passes through these phases, shown beside the batch progress:
+
+| Phase | What the worker does | Where it resumes |
+|---|---|---|
+| Writing *DocType* | Inserts the rows of up to 5,000 parent records per transaction, with their child rows, private pictures and batch receipts. Sensitivity tags are saved through their documents | After the last committed batch |
+| Deriving | Sets the values a save would derive, for this delegation only: an activity's place type, country and areas from its Place, the department and country copies on history rows and notes, the share facts and the latest-state marks | Runs again; rows that already hold the value are not written |
+| Verifying | Compares every stored column with the publication, batch by batch, and passes one record in fifty through the document route's own check | After the last compared batch |
+| Ready for activation | Counts the delegation, counts the rows that break a rule a query can check (required fields, options, links, option sets and collections, links that leave the context, places, history locks), and compares the receipts with the publication. With no finding the run becomes **Publication ready** and the report can be downloaded | — |
+
+![A set-based run at Publication ready, with its write route, phase and the Activate delegation action](docs/screenshots/set-based-ready.png)
+
+A job works for about two minutes on the batches and then hands over to the next job. A pause takes effect at the next transaction while writing and within about ten seconds while verifying, and a restarted worker loses at most one transaction. The live-load thresholds below pause this route as well. A failed step pauses the run with its finding; **Resume from last receipt** continues from the phase and batch it had reached.
+
+Activation releases the held assignments and shares through their documents and opens the context in one transaction. It reads the row counts and receipts again; it does not read every record again, because the context has been locked and hidden since the verification. **Discard run** removes the delegation's rows by primary key, 5,000 at a time, and does not need the Frappe change the document routes' cleanup depends on.
+
+To have more records checked through the documents, lower the sampling interval on the site; `1` checks every record, at the document route's speed for that phase.
+
+```sh
+bench --site "$TARGET_SITE" set-config ucm_migration_sample_every 10 --parse
+```
+
+Know these limits before choosing the route:
+
+- No controller runs for a copied row. A controller rule that is not in the verification's list is checked on the sampled records only.
+- A private picture keeps its published file name. The document routes may store the same bytes under another name.
+- Assignments and shares are released in one transaction at activation, as on the document routes. A delegation with very many of them has a long activation.
+- The route has been measured on one synthetic delegation of 243,000 rows without shares. Rehearse a delegation of the expected size, and one with shares, before relying on the figures.
 
 ## Operating larger publications
 

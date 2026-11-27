@@ -303,7 +303,9 @@ On a disposable site, stage a fresh generated context containing 60 Persons and 
 
 ### Set-based SQL route
 
-`ucm_migration_loader.ucm_migration_loader.set_based` loads a staged publication without saving each record through its controller. It is run from the receiving bench and is not yet offered in Desk or on the queue. It uses the same staged file, run record, batch receipts and hidden context as the document route. Sensitivity tags, assignments and shares still go through the documents.
+`ucm_migration_loader.ucm_migration_loader.set_based` loads a staged publication without saving each record through its controller. An operator chooses it for a staged run ([operator guide](README.md#set-based-sql-route)); the migration queue then runs it in jobs, each taking one step from where the last one stopped. It uses the same staged file, hash index, run record, batch receipts and hidden context as the document route. Sensitivity tags, assignments and shares still go through the documents.
+
+The same steps can be called one at a time from the receiving bench, which is how the timings below were taken:
 
 ```sh
 bench --site "$TARGET_SITE" execute ucm_migration_loader.ucm_migration_loader.set_based.apply --kwargs "{\"run\":\"$RUN_ID\"}"
@@ -314,10 +316,36 @@ bench --site "$TARGET_SITE" execute ucm_migration_loader.ucm_migration_loader.se
 
 - `apply` writes the published rows with multi-row inserts. Each group of batches of one DocType, up to 5,000 parent records, commits with its receipts and the run's cursor. Run it again to resume.
 - `derive` applies the values a save would derive, for this delegation only: an activity's place type, country and areas from its Place, the department and country copies on history rows and notes, the share facts and the latest-state marks. It returns the rows each rule changed.
-- `verify` compares every stored column with the publication, counts the rows that break the rules a query can check (required fields, options, links, option sets and collections, links that leave the context, places, history locks), and passes one record in fifty through the document route's own check. With no finding the run becomes **Publication ready**. The report is kept on the run.
+- `verify` compares every stored column with the publication, counts the rows that break the rules a query can check (required fields, options, links, option sets and collections, links that leave the context, places, history locks), and passes one record in fifty through the document route's own check. With no finding the run becomes **Publication ready**; with findings it is paused. The report is kept on the run.
 - `activate` releases the held assignments and shares through the documents and opens the context in one transaction. It reads the counts and receipts again and does not re-read every record.
 - `discard` removes a hidden run's rows by primary key, 5,000 at a time, and needs no change to Frappe.
+- `advance` is what a queued job calls: it finds the step the run is at and takes it. A job is given 120 seconds of batches (`BUDGET`), and a verification saves its cursor every ten seconds (`CHECKPOINT`).
 
 No controller runs for a copied row. A rule of a controller that is not in `verify`'s list is checked only on the sampled records. A picture keeps its published file name; the document route may store the same bytes under another name.
 
-`tests/set_based_comparison.py` compares a load by this route with the same delegation loaded through the documents: a row-by-row and field-by-field diff of every table of the publication, and the row count of every table of the site before and after. `tests/test_set_based.py` covers the parts that need no site.
+**Measured on a development site.** One synthetic delegation of 10,000 persons, 242,786 business rows and 70 assignments in 223 batches of 1,000, loaded beside 24.8 million rows of other delegations, on a database with a 128 MB buffer pool. Each figure is one run.
+
+| Step | Set-based SQL | Document API |
+|---|---|---|
+| Stage the sealed file | 10.5 s | same step |
+| Write the business batches | 108.3 s | |
+| Derive | 11.6 s (4,163 activities took their geography from their Place) | |
+| Verify (every column, 242 rules, 4,305 records through the documents) | 38.3 s | |
+| Staged to **Publication ready** | 2.8 min | 48.7 min |
+| Activation, rolled back | 4.6 s | not timed |
+| Discard | 78 to 242 s over five runs | not timed |
+
+Both loads were compared row by row and field by field over every table of the publication. All 242,786 rows are on both sides and equal, except the file name of the 10,000 private pictures (`File.file_url` and `Person.person_picture`), which hold the same bytes. The row counts of all 504 tables of the site changed by the same amounts. The document route's own reconciliation of every record passed over the rows the set-based route had written (23.9 min).
+
+The delegation holds no shares, and no larger delegation has been loaded by this route.
+
+`tests/set_based_comparison.py` makes this comparison: a row-by-row and field-by-field diff of every table of the publication, and the row count of every table of the site before and after. `tests/test_set_based.py` covers the parts that need no site.
+
+**Through the queue.** `tests/set_based_queue.py rehearse` stages a sealed file, chooses the route and runs the queue's jobs in its own process with a few seconds of budget a job. On the way it checks a pause for live load, a pause asked by the operator, a failure injected into the verification and the resume at the saved batch, the report, an activation refused after a receipt was changed, an activation timed and rolled back, and the discard over several jobs. The run ends discarded. `tests/set_based_queue.py worker` asks for the load as Desk and `ucm-push` do and follows the bench's own worker. `e2e/set_based_route.py` does the same in a browser: it chooses the route in the dialog, applies, and waits for **Publication ready**.
+
+On the same delegation the rehearsal reached **Publication ready** in 134 s, pauses and the injected failure included, over 23 jobs of five seconds, and discarded it in 242 s over 33 jobs. Chosen and applied in Desk and carried by the bench's own worker, which serves every site of the development bench, the run was ready 4.0 min after its first receipt: 181 s of writing (36 s of them for 1,175 sensitivity tags through the documents), 13 s of deriving and 42 s of verifying.
+
+```sh
+env/bin/python apps/ucm_migration_loader/tests/set_based_queue.py rehearse --site REHEARSAL_SITE --run RUN_DIGEST --publication /path/to/publication.sqlite
+env/bin/python apps/ucm_migration_loader/e2e/set_based_route.py --site REHEARSAL_SITE --run RUN_DIGEST
+```
