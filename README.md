@@ -242,7 +242,7 @@ Know these limits before choosing the route:
 - A private picture keeps its published file name. The document routes may store the same bytes under another name.
 - Assignments and shares are released in one transaction at activation, as on the document routes. A delegation with 11,000 shares had an activation of about three minutes.
 - A share that UCM's current rules no longer allow stops the verification, with its batch and item in the finding. Correct the consent or the publication and resume.
-- The largest delegation loaded by this route had 1.25 million rows and reached **Publication ready** in 10.5 minutes on a development site with no caseworkers at work. Rehearse a delegation of the expected size, beside live use, before relying on the figures.
+- The largest delegation loaded by this route had 1.25 million rows and reached **Publication ready** in 10.5 minutes on a quiet development site, and in 13 minutes while eight simulated caseworkers worked in other delegations without a failed request or a lock wait. A discard disturbed them more than a load did: schedule it, like a load, outside the busiest hours. Rehearse a delegation of the expected size on a production-like environment before relying on the figures.
 
 ## Operating larger publications
 

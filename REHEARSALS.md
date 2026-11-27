@@ -355,7 +355,32 @@ The small delegation was activated through the queue while the other two delegat
 
 The first attempt at the large delegation was stopped by the verification at batch 148: a sampled activity carried a list of tag codes that differed from the publication. The cause was in the re-keying tool, which had renamed a tag code but not its occurrences inside lists; the route itself behaved as intended, paused the run and named the batch and item. That load was discarded (the 371 s above) and a corrected copy loaded.
 
-Not covered: a share that UCM's current consent rules no longer allow (none occurred), a delegation larger than 1.25 million rows, and a load while caseworkers work in other delegations.
+**Beside live use.** `tests/live_use.py` opens sessions for eight of the site's own users, of four roles in each of two live delegations (196,000 and 98,000 persons), and has each search persons by name, open a person, open a case, list a person's history and save a case of their own, with half a second or more between two requests. The same large delegation was then discarded, staged, loaded and activated (rolled back) by the set-based route while they worked. Over 30 minutes they made 16,008 requests: none failed, and the database counted no row lock wait and no deadlock in any phase.
+
+95th percentile of each request in milliseconds, per phase:
+
+| Phase | Seconds | Open a person | Open a case | List a history | Save a case | Search by name |
+|---|---|---|---|---|---|---|
+| Quiet, before | 120 | 13 | 11 | 168 | 78 | 2,975 |
+| Discard of the earlier load | 564 | 53 | 58 | 502 | 136 | 6,151 |
+| Staging the sealed file | 49 | 46 | 41 | 204 | 89 | 4,287 |
+| Load: write | 471 | 16 | 13 | 251 | 62 | 3,602 |
+| Load: derive | 93 | 13 | 11 | 191 | 57 | 2,892 |
+| Load: verify | 222 | 14 | 11 | 195 | 52 | 3,069 |
+| Activation, rolled back | 196 | 25 | 24 | 210 | 56 | 3,036 |
+| Quiet, after | 60 | 13 | 11 | 165 | 45 | 3,193 |
+
+The write, derive and verify phases left the caseworkers' requests close to their quiet values. The discard disturbed them most: opening a record took about four times as long at the 95th percentile, and the slowest search 9.5 s. The load itself slowed down under the traffic: 13.1 min to **Publication ready** against 10.5 on the quiet site, the discard 9.4 min against 6.2, the activation 193 s against 167.
+
+With `ucm_migration_live_p95_ms` set to 1,000 on the site and the same eight caseworkers at work, the loader's pressure check read the live requests and answered "Paused: live read p95 exceeded 1000 ms"; at 60,000 it let a load go on.
+
+This is a measurement of interference on a development bench: one web process, eight users, a database with a 128 MB buffer pool. It shows that the route takes no lock a caseworker waits for, and in which phases its work on the database is felt; it does not say what a production deployment carries. The name search took about three seconds at the 95th percentile before any load started, which is a matter of the search and not of the loader.
+
+```sh
+env/bin/python apps/ucm_migration_loader/tests/live_use.py --site REHEARSAL_SITE --users sites/REHEARSAL_SITE/private/benchmark/users.json --contexts SAH,BOL --caseworkers 8 --run RUN_DIGEST --publication /path/to/publication.sqlite
+```
+
+Not covered: a share that UCM's current consent rules no longer allow (none occurred), a delegation larger than 1.25 million rows, and more than a handful of caseworkers.
 
 `tests/set_based_comparison.py` makes this comparison: a row-by-row and field-by-field diff of every table of the publication, and the row count of every table of the site before and after. `tests/test_set_based.py` covers the parts that need no site.
 
