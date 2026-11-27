@@ -240,3 +240,23 @@ class TestFailedJob(IntegrationTestCase):
 			self.assertRaises(frappe.db.OperationalError, publication_jobs.execute, run, "apply", 4, 5)
 		self.assertEqual(column(run, "state"), "Publication paused")
 		self.assertEqual(column(run, "finding"), "apply after committed batch 1: OperationalError")
+
+
+class TestRouteOfABenchLoad(IntegrationTestCase):
+	"""The set-based steps can be called from the bench: the run then carries the route as one chosen in Desk."""
+
+	def test_a_staged_run_is_given_the_route(self):
+		from ucm_migration_loader.ucm_migration_loader import set_based
+
+		run = make_run(state="Publication staged", route="Document API").name
+		set_based._take_route(run)
+		self.assertEqual(column(run, "write_route"), "Set-based SQL")
+		self.assertTrue(publication_jobs.set_based(run))
+		set_based._take_route(run)  # and keeps it
+
+	def test_a_run_started_on_another_route_is_refused(self):
+		from ucm_migration_loader.ucm_migration_loader import set_based
+
+		run = make_run(state="Publication applying", route="Document API", applied=1).name
+		self.assertRaisesRegex(ValueError, "another write route", set_based._take_route, run)
+		self.assertEqual(column(run, "write_route"), None)

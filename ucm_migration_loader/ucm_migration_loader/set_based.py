@@ -452,9 +452,23 @@ def _write(
 	}
 
 
+def _take_route(run: str) -> None:
+	"""A run loaded by this route says so in its plan: the form, the list and the queue read the route there. A
+	staged run is given the route; a run already started on another route is refused."""
+	from ucm_migration_loader import write_routes
+
+	record = api._record(run)
+	if write_routes.set_based(json.loads(record.write_plan_json or "{}")):
+		return
+	if not write_routes.editable(record):
+		raise ValueError(_("This run was started on another write route"))
+	write_routes.select(run, ROUTE)
+
+
 def apply(run: str, stop_at: int | None = None) -> dict:
 	"""Write the business batches not yet applied, all of them or up to `stop_at`, in one call from the bench."""
 	api._operator()
+	_take_route(run)
 	started = monotonic()
 	with _publication(run) as sealed:
 		opened = monotonic() - started
