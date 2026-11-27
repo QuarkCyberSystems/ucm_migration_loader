@@ -58,7 +58,7 @@ class Caseworker(threading.Thread):
 			response = self.http.request(method, self.url + path, timeout=60, **kwargs)
 			ok = response.status_code == 200
 			data = response.json().get("data") if ok else None
-		except requests.RequestException, ValueError:
+		except (requests.RequestException, ValueError):
 			pass
 		if operation:
 			self.meter.add(phase, operation, (time.monotonic() - started) * 1000, ok)
