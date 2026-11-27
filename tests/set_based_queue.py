@@ -1,6 +1,6 @@
 """Carry a staged publication through the migration queue on the set-based route, on a rehearsal site.
 
-Two commands, run from the bench with the loader's source on PYTHONPATH; each prints its result as JSON:
+Commands, run from the bench; each prints its result as JSON:
 
 	rehearse   run the queue's jobs in this process, with a budget of a few seconds a job, and check on the way:
 	           a pause for live load, a pause asked by the operator, a failure in the verification, the report,
@@ -8,6 +8,9 @@ Two commands, run from the bench with the loader's source on PYTHONPATH; each pr
 	           discard in several jobs. The run ends discarded.
 	worker     ask for the load as Desk and ucm-push do, and follow the bench's own worker until the run is
 	           ready or paused. The run stays ready and hidden.
+	activate   ask for the activation the same way and follow the worker: the delegation is opened. With
+	           --dry-run the activation runs in this process and is rolled back: the delegation stays hidden.
+	discard    ask for the discard and follow the worker until the run's rows are gone.
 
 Synthetic data only: the publication is sealed from a site filled by the data generator.
 """
@@ -208,29 +211,107 @@ def rehearse(run: str, budget: float) -> dict:
 	return {**out, "jobs": dict(queue.phases)}
 
 
-def worker(run: str, timeout: float) -> dict:
-	from ucm_migration_loader import api
-
+def follow(run: str, timeout: float, going: tuple) -> tuple[list, float]:
+	"""The run's states and phases while the worker has it, with the seconds since the request."""
 	started, timeline, seen = time.monotonic(), [], None
-	api.apply(run)
-	frappe.db.commit()
 	while time.monotonic() - started < timeout:
 		current = record(run)
 		at = (current.state, current.worker_phase, current.applied or 0, current.reconcile_cursor or 0)
 		if at[:2] != seen:
 			seen = at[:2]
 			timeline.append([round(time.monotonic() - started, 1), *at])
-		if current.state != "Publication applying":
+		if current.state not in going or current.finding:
 			break
 		time.sleep(1)
+	return timeline, round(time.monotonic() - started, 2)
+
+
+def worker(run: str, timeout: float) -> dict:
+	from ucm_migration_loader import api
+
+	api.apply(run)
+	frappe.db.commit()
+	timeline, seconds = follow(run, timeout, ("Publication applying",))
 	current = record(run)
 	report = json.loads(current.reconciliation_json or "{}")
 	return {
 		"state": current.state,
 		"finding": current.finding,
-		"seconds": round(time.monotonic() - started, 2),
+		"seconds": seconds,
 		"findings": report.get("findings"),
+		"rows_compared": sum((report.get("rows_compared") or {}).values()),
+		"derived_rows_changed": report.get("derived_rows_changed"),
+		"sampled_document_checks": report.get("sampled_document_checks"),
+		"share_review": report.get("share_review"),
+		"deferred_access_rows": report.get("deferred_access_rows"),
 		"step_seconds": report.get("seconds"),
+		"write_seconds_by_doctype": {
+			doctype: [batches, records, seconds]
+			for doctype, batches, records, seconds in frappe.db.sql(
+				"""select parent_doctype, count(*), sum(parent_rows), round(sum(write_seconds), 1)
+				from `tabUCM Migration Batch` where migration_run = %s
+				group by parent_doctype order by min(sequence_number)""",
+				run,
+			)
+		},
+		"timeline": timeline,
+	}
+
+
+def access(run: str) -> dict:
+	"""What an activation did with the assignments and shares, counted on the site."""
+	current = record(run)
+	report = json.loads(current.reconciliation_json or "{}")
+	context = current.context_id
+	return {
+		"state": current.state,
+		"finding": current.finding,
+		"context_status": frappe.db.get_value("Context", context, "context_status"),
+		"released_access_rows": report.get("released_access_rows"),
+		"shares_held_at_activation": report.get("shares_held_at_activation"),
+		"inbound_share_outcomes": report.get("inbound_share_outcomes"),
+		"stored_shares_by_status": dict(
+			frappe.db.sql(
+				"select share_status, count(*) from `tabRecord Share` where context_tech_id = %s group by 1",
+				context,
+			)
+		),
+		"held_shares_by_state": dict(
+			frappe.db.sql(
+				"select state, count(*) from `tabUCM Migration Held Share` where migration_run = %s group by 1",
+				run,
+			)
+		),
+	}
+
+
+def activate(run: str, timeout: float, dry_run: bool) -> dict:
+	from ucm_migration_loader import api
+	from ucm_migration_loader.ucm_migration_loader import set_based
+
+	if dry_run:
+		result = set_based.activate(run, commit=False)
+		return {"rolled_back": True, **result, "state_kept": record(run).state}
+	api.activate(run)
+	frappe.db.commit()
+	timeline, seconds = follow(run, timeout, ("Publication ready",))
+	return {**access(run), "seconds": seconds, "timeline": timeline}
+
+
+def discard_through_worker(run: str, timeout: float) -> dict:
+	from ucm_migration_loader import api
+	from ucm_migration_loader.ucm_migration_loader import set_based
+
+	api.discard(run)
+	frappe.db.commit()
+	timeline, seconds = follow(run, timeout, ("Publication cleaning",))
+	current = record(run)
+	left = set_based.stored_counts(current.context_id, json.loads(current.manifest_json))
+	return {
+		"state": current.state,
+		"finding": current.finding,
+		"seconds": seconds,
+		"rows_left": {doctype: count for doctype, count in left.items() if count},
 		"timeline": timeline,
 	}
 
@@ -239,12 +320,13 @@ def main() -> None:
 	parser = argparse.ArgumentParser(
 		description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
 	)
-	parser.add_argument("step", choices=["rehearse", "worker"])
+	parser.add_argument("step", choices=["rehearse", "worker", "activate", "discard"])
 	parser.add_argument("--site", required=True)
 	parser.add_argument("--run", required=True)
 	parser.add_argument("--publication", type=Path, help="Stage this sealed file first")
 	parser.add_argument("--budget", type=float, default=5, help="Seconds of batches per rehearsed job")
 	parser.add_argument("--timeout", type=float, default=3600, help="Seconds to follow the worker")
+	parser.add_argument("--dry-run", action="store_true", help="activate: in this process, rolled back")
 	parser.add_argument("--evidence", type=Path, help="Write the result here as well")
 	args = parser.parse_args()
 	# the site is opened from the bench's sites folder: the paths given are read from here
@@ -252,10 +334,16 @@ def main() -> None:
 	evidence = args.evidence and args.evidence.resolve()
 	connect(args.site)
 	try:
-		stage(publication, args.run)
-		result = (
-			rehearse(args.run, args.budget) if args.step == "rehearse" else worker(args.run, args.timeout)
-		)
+		if args.step == "rehearse":
+			stage(publication, args.run)
+			result = rehearse(args.run, args.budget)
+		elif args.step == "worker":
+			stage(publication, args.run)
+			result = worker(args.run, args.timeout)
+		elif args.step == "activate":
+			result = activate(args.run, args.timeout, args.dry_run)
+		else:
+			result = discard_through_worker(args.run, args.timeout)
 	finally:
 		frappe.destroy()
 	text = json.dumps(result, indent=1, default=str)
