@@ -34,6 +34,11 @@ def is_publication(run):
 
 def request(run, action, max_batches=None):
 	api._operator()
+	# a proposal may be for a delegation the site has no context for yet: it is declined before any context
+	# is looked for
+	waiting = frappe.db.get_value(api.RUN, run, "state", for_update=True)
+	if action == "discard" and waiting in (api.AWAITING, api.PROPOSED):
+		return _withdraw(run)
 	ctx, record = lock_run(run)
 	if action == "discard" and record.state == "Discarded":
 		from .publication_receiver import remove_after_discard
@@ -42,8 +47,6 @@ def request(run, action, max_batches=None):
 		return api._result(record)
 	if action == "activate" and record.state == "Activated":
 		return api._result(record)
-	if action == "discard" and record.state in (api.AWAITING, api.PROPOSED):
-		return _withdraw(run)
 	if max_batches is not None and max_batches < 1:
 		raise ValueError("Select a positive batch limit")
 	allowed = {

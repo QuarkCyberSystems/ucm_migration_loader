@@ -208,10 +208,16 @@ def _receipts(run: str) -> list[dict]:
 	)
 
 
-def _delegation(context: str) -> str:
+def _delegation(record) -> str:
+	"""The delegation as its context names it. Where the site has no context for it yet, as the proposed
+	hand-off names it."""
 	import frappe
 
+	context = record.context_id
 	name, code = frappe.db.get_value("Context", context, ["context_name", "context_code"]) or (None, None)
+	if not (name or code):
+		proposed = _json(record.get("approval_json")).get("delegation") or {}
+		name, code = proposed.get("name"), proposed.get("code")
 	if name and code:
 		return f"{name} ({code})"
 	return name or code or context
@@ -341,7 +347,7 @@ def build(record) -> dict:
 		"stalled": no_job,
 		"batches_committed": record.applied or 0,
 		"finding": record.finding,
-		"delegation": _delegation(record.context_id),
+		"delegation": _delegation(record),
 		"steps": run_steps,
 		"records": records(manifest.get("counts") or {}, report, record.state == ACTIVATED),
 		"findings": data_quality.findings(report),
@@ -368,7 +374,7 @@ def refresh(run: str) -> None:
 	route = (
 		None if record.state in (REJECTED, AWAITING, PROPOSED) else route_of(_json(record.write_plan_json))
 	)
-	values = {"delegation": _delegation(record.context_id), "write_route": route}
+	values = {"delegation": _delegation(record)[:140], "write_route": route}
 	if is_publication(manifest):
 		values["duration"] = round(duration(_parts(record)[3])) or None
 	frappe.db.set_value(api.RUN, run, values, update_modified=False)

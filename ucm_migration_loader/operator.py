@@ -130,6 +130,18 @@ def _prepare_context(context: str, run: str, code: str | None, name: str | None)
 	return True
 
 
+def _open_to_approval(run: str) -> str | None:
+	"""The state of the run this publication has on the site, where it may still be approved: none yet,
+	proposed, or approved before."""
+	import frappe
+	from frappe import _
+
+	state = frappe.db.get_value(api.RUN, run, "state", for_update=True)
+	if state and state not in (api.AWAITING, api.PROPOSED):
+		frappe.throw(_("This publication is already on the site, as a run that is {0}").format(_(state)))
+	return state
+
+
 def _await(run: str, manifest: dict, approval: dict) -> str:
 	"""Keep the approved publication as a run that waits for its file, so that it shows in the Desk from the
 	approval on. Returns the run's short ID."""
@@ -148,8 +160,8 @@ def _await(run: str, manifest: dict, approval: dict) -> str:
 			"size": approval["size"],
 		}
 	)
-	state = frappe.db.get_value(api.RUN, run, "state", for_update=True)
-	if state in (api.AWAITING, api.PROPOSED):
+	state = _open_to_approval(run)
+	if state:
 		proposal = json.loads(frappe.db.get_value(api.RUN, run, "approval_json") or "{}")
 		kept = {key: proposal[key] for key in ("proposed_by", "proposed_on", "delegation") if key in proposal}
 		frappe.db.set_value(
@@ -161,8 +173,6 @@ def _await(run: str, manifest: dict, approval: dict) -> str:
 				"publishing_user": approval["publisher"],
 			},
 		)
-	elif state:
-		frappe.throw(_("This publication is already on the site, as a run that is {0}").format(_(state)))
 	else:
 		record = frappe.get_doc(
 			{
@@ -200,6 +210,8 @@ def approve(
 		frappe.throw(_("The account that sends the file cannot be the one that approves it"))
 	if publishing_user and api.ROLE in frappe.get_roles(publishing_user):
 		frappe.throw(_("A Migration Admin cannot be the publishing account"))
+	# before anything is written: an approval's file opens the site to the upload
+	_open_to_approval(run)
 	made = _prepare_context(
 		manifest["context"], run, context_code or about.get("code"), context_name or about.get("name")
 	)
@@ -256,10 +268,6 @@ def propose(handoff: dict) -> dict:
 	# only the loader's own methods write a run; the publishing account holds no right on the DocType
 	record.insert(set_name=run, ignore_permissions=True)
 	run_overview.refresh(run)
-	if about.get("code") and not frappe.db.exists("Context", manifest["context"]):
-		# the site has no context yet to name the delegation by: the list shows what the hand-off calls it
-		named = f"{about.get('name') or about['code']} ({about['code']})"[:140]
-		frappe.db.set_value(api.RUN, run, "delegation", named, update_modified=False)
 	return {"run": run, "display_id": record.display_id, "state": api.PROPOSED}
 
 

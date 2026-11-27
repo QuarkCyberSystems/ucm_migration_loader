@@ -275,6 +275,26 @@ class TestProposal(OperatorCase):
 		frappe.set_user(self.proposer)
 		self.assertRaises(frappe.PermissionError, publication_transport.status, run)
 
+	def test_a_proposal_for_a_delegation_the_site_does_not_know_can_be_declined(self):
+		context = str(uuid.uuid4())
+		_path, run, handoff = self.sealed(context=context)
+		handoff["delegation"] = {"code": "LDP8", "name": "Declined delegation"}
+		frappe.set_user(self.proposer)
+		api.propose(handoff)
+		frappe.set_user(self.admin)
+		self.assertEqual(api.discard(run)["state"], "Discarded")
+		# the list still names the delegation as its hand-off did
+		self.assertEqual(frappe.db.get_value(api.RUN, run, "delegation"), "Declined delegation (LDP8)")
+		self.assertFalse(frappe.db.exists("Context", context))
+
+	def test_a_declined_proposal_is_not_approved_and_no_file_is_accepted_for_it(self):
+		_path, run, handoff, _result = self.proposed()
+		api.discard(run)
+		self.assertRaisesRegex(
+			frappe.ValidationError, "already on the site", operator.approve, handoff, self.proposer
+		)
+		self.assertFalse((publication_transport.folder(run) / "approval.json").exists())
+
 	def test_several_proposals_wait_for_one_delegation_and_one_is_approved(self):
 		_path, first, first_handoff, _result = self.proposed()
 		_other, second, second_handoff, _result = self.proposed(persons=[str(uuid.uuid4())])
