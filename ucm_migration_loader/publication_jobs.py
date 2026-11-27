@@ -86,8 +86,9 @@ def _withdraw(run):
 
 def enqueue(run, action, ticket, max_batches, stop_at):
 	timeout = None
-	if set_based(run):
-		# a set-based step works on a whole delegation at once, and is given the time for it
+	if set_based(run) or action == "discard":
+		# a set-based step works on a whole delegation at once, and is given the time for it; the rows of every
+		# route are discarded in sets
 		from .ucm_migration_loader.set_based import JOB_TIMEOUT as timeout
 
 	frappe.enqueue(
@@ -150,7 +151,7 @@ def execute(run, action, ticket, max_batches, stop_at=None):
 
 def _execute(run, action, ticket, max_batches, stop_at):
 	"""Run one job. Returns whether it held the run and did its work."""
-	from . import publication_cleanup, publication_worker
+	from . import publication_worker
 
 	try:
 		if action == "activate":
@@ -160,7 +161,7 @@ def _execute(run, action, ticket, max_batches, stop_at):
 		_, record = lock_run(run)
 		if record.dispatch_id != ticket:
 			return False
-		if set_based(run):
+		if set_based(run) or action == "discard":
 			continue_set_based(run, action, ticket, max_batches, stop_at)
 			return True
 		if action == "activate":
@@ -168,17 +169,10 @@ def _execute(run, action, ticket, max_batches, stop_at):
 			return True
 		cursor = record.applied or 0
 		if stop_at is None:  # Jobs already in Redis before cursor bounds were introduced.
-			stop_at = max(0, cursor - max_batches) if action == "discard" else cursor + max_batches
+			stop_at = cursor + max_batches
 		limit = min(max_batches, BATCHES_PER_JOB)
 		deadline = monotonic() + JOB_SECONDS
-		if action == "discard":
-			if record.state != CLEANING:
-				return False
-			result = publication_cleanup.discard(
-				run, limit, ticket=ticket, stop_at=stop_at, deadline=deadline
-			)
-			more = result["state"] == CLEANING and result["applied"] > stop_at
-		elif action == "apply":
+		if action == "apply":
 			if record.state != APPLYING:
 				return False
 			result = publication_worker.apply(run, limit, ticket=ticket, stop_at=stop_at, deadline=deadline)

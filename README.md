@@ -35,7 +35,7 @@ git pull
 python -m pip install .
 ```
 
-**Receiving host.** In a Frappe bench with UCM installed on the target site, install the app and sync its DocTypes. The full-publication cleanup implementation uses a Frappe 16.52.0 change. Review the [framework patch](dist/frappe-16.52.0-migration-cleanup.patch) and the [cleanup dependency](REHEARSALS.md#operating-and-cancelling-a-sealed-publication) before enabling discard on a new bench.
+**Receiving host.** In a Frappe bench with UCM installed on the target site, install the app and sync its DocTypes. The app runs on Frappe as released: it needs no change to the framework.
 
 ```sh
 export TARGET_SITE=ucm.example.org

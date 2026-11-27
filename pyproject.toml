@@ -77,7 +77,6 @@ max-statements = 60
 "tests/checkpoint_recovery.py" = ["C901"]
 "ucm_migration_loader/frozen.py" = ["C901"]
 "ucm_migration_loader/held_shares.py" = ["C901"]
-"ucm_migration_loader/publication_cleanup.py" = ["C901", "PLR0912"]
 "ucm_migration_loader/publication_jobs.py" = ["C901", "PLR0912"]
 "ucm_migration_loader/publication_prerequisites.py" = ["C901", "PLR0912"]
 "ucm_migration_loader/publication_shares.py" = ["C901"]

@@ -62,6 +62,30 @@ from . import run_overview
 
 # Their rules read clearances, consent and other delegations: written through the documents on every route
 THROUGH_DOCUMENTS = frozenset(("Record Tag",))
+# What Frappe keeps about a record outside the record's own table, each by the two columns that name the record:
+# rows it deletes with the record, and rows it keeps and unlinks. Frappe's own delete leaves this to a job queued
+# for later, which would then act on a record published again under the same identifier; a discard removes it
+# with the rows, and calls no delete of Frappe. A test keeps the two lists in step with
+# frappe.model.delete_doc.delete_dynamic_links.
+LINKED = (
+	("Submission Queue", "ref_doctype", "ref_docname"),
+	("ToDo", "reference_type", "reference_name"),
+	("Email Unsubscribe", "reference_doctype", "reference_name"),
+	("DocShare", "share_doctype", "share_name"),
+	("Version", "ref_doctype", "docname"),
+	("Comment", "reference_doctype", "reference_name"),
+	("View Log", "reference_doctype", "reference_name"),
+	("Document Follow", "ref_doctype", "ref_docname"),
+	("Notification Log", "document_type", "document_name"),
+	("Communication Link", "link_doctype", "link_name"),
+)
+UNLINKED = (
+	("Communication", "reference_doctype", "reference_name"),
+	("Activity Log", "reference_doctype", "reference_name"),
+	("Activity Log", "timeline_doctype", "timeline_name"),
+)
+# what Frappe's delete removes itself, beside the job: the tags and the search entry of the record
+ALSO_LINKED = (("Tag Link", "document_type", "document_name"),)
 INSERT_ROWS = 500  # rows per INSERT statement
 COMMIT_ROWS = 5000  # parent rows per transaction: small enough for the replicas to follow
 DELETE_ROWS = 5000
@@ -1180,9 +1204,25 @@ def activate(run: str, commit: bool = True) -> dict:
 # discard
 
 
+def _forget(doctype: str, names: tuple) -> None:
+	"""Remove what Frappe keeps about these records beside their rows: comments, versions, view logs, assignments
+	and the like. A load through the documents leaves some, a picture's comment for one."""
+	for table, kind, name in (*LINKED, *ALSO_LINKED):
+		# nosemgrep: frappe-semgrep-rules.rules.security.frappe-sql-format-injection -- reviewed: the table and its two columns are constants of this module; the DocType and the names are parameters
+		frappe.db.sql(f"delete from `tab{table}` where `{kind}`=%s and `{name}` in %s", (doctype, names))
+	for table, kind, name in UNLINKED:
+		# nosemgrep: frappe-semgrep-rules.rules.security.frappe-sql-format-injection -- reviewed: the table and its two columns are constants of this module; the DocType and the names are parameters
+		frappe.db.sql(
+			f"update `tab{table}` set `{kind}`=null, `{name}`=null where `{kind}`=%s and `{name}` in %s",
+			(doctype, names),
+		)
+	frappe.db.sql("delete from `__global_search` where doctype=%s and name in %s", (doctype, names))
+
+
 def _delete(context: str, keep_files: bool = False, deadline: float | None = None) -> tuple[dict, bool]:
 	"""Remove every row of the publication profile that belongs to a hidden delegation, the tables that depend on
-	others first, by primary key, DELETE_ROWS at a time with a commit after each. Pictures no remaining File row
+	others first, by primary key, DELETE_ROWS at a time with a commit after each, and with each record what
+	Frappe keeps about it. The rows of either write route are removed this way: the routes store the same rows. Pictures no remaining File row
 	names are removed from the disk afterwards. Returns the rows removed per table, and whether none is left:
 	past the deadline the rest waits for the next call."""
 	removed, urls, finished = Counter(), set(), True
@@ -1205,6 +1245,8 @@ def _delete(context: str, keep_files: bool = False, deadline: float | None = Non
 				urls.update(
 					frappe.db.sql_list("select file_url from `tabFile` where name in %s", (tuple(names),))
 				)
+			if doctype in ORDER or doctype == "File":
+				_forget(doctype, tuple(names))
 			with _counts_moving(doctype, tuple(names)):
 				# nosemgrep: frappe-semgrep-rules.rules.security.frappe-sql-format-injection -- reviewed: the table is a DocType of the publication profile; the names are a parameter
 				frappe.db.sql(f"delete from `tab{doctype}` where name in %s", (tuple(names),))
