@@ -139,7 +139,7 @@ The detailed commands take every value as an option, for scripts and for cases t
 
 ### 1. Prepare the receiving context
 
-Create an empty **Context** with the same UUID and code as the published delegation. Set **Context Status** to **Locked** and **Context Discoverability** to **Hidden**. For example, on the receiving bench:
+A hand-off made by `ucm-push seal` names its delegation, and its approval makes the context where the site has none, locked and hidden. The detailed commands below write a hand-off without that name: approve it in the Desk, where the code and the name are typed, or make the context first. It is an empty **Context** with the same UUID and code as the published delegation, with **Context Status** set to **Locked** and **Context Discoverability** to **Hidden**. For example, on the receiving bench:
 
 ```sh
 bench --site "$TARGET_SITE" console
@@ -200,11 +200,10 @@ A batch holds up to 1,000 parent documents and 4 MiB, which is also the default 
 
 ### 3. Approve, transfer and stage
 
-Deliver the independently reviewed `handoff.json` to the receiving operator. On the receiving bench, bind its digest and byte count to an enabled publishing account:
+Deliver the independently reviewed `handoff.json` to the receiving operator. A Migration Admin approves it for one enabled publishing account, in the Desk ([The short way](#the-short-way)) or on the receiving bench. The approval binds the file's fingerprint and size to that account, and the publication becomes a run that waits for its file:
 
 ```bash
-bench --site "$TARGET_SITE" execute ucm_migration_loader.operator.approve_sealed \
-  --kwargs '{"handoff_path":"/srv/approved/DEMO01/handoff.json","publishing_user":"publisher@example.org"}'
+bench --site "$TARGET_SITE" ucm-migration approve /srv/approved/DEMO01/handoff.json --publisher publisher@example.org
 ```
 
 On the publishing host, load the publisher's Frappe API key and secret from your credential store as `UCM_MIGRATION_TOKEN` in `key:secret` format. For a private TLS authority, set `REQUESTS_CA_BUNDLE` to its CA bundle.
@@ -215,28 +214,27 @@ ucm-push transfer-status "${remote[@]}"
 ucm-push send-publication "${remote[@]}" --publication "$PUBLICATION" --progress
 ```
 
-This transfers one sealed file in resumable 512 KiB chunks. The site writes them into one file beside its staged files and notes how far that file is safely on the disk; staging renames it, so the site holds the publication once and needs free space for its size only. The staging job is given an hour, and three minutes more for each gigabyte beyond twenty. On the receiving bench, set `RUN_ID` from the approved handoff and stage the uploaded file:
+This transfers one sealed file in resumable 512 KiB chunks. The site writes them into one file beside its staged files and notes how far that file is safely on the disk; staging renames it, so the site holds the publication once and needs free space for its size only. The staging job is given an hour, and three minutes more for each gigabyte beyond twenty. The site's worker stages the file by itself when the whole of it has arrived. To ask for the staging from the receiving bench instead, and to set `RUN_ID` for the commands that follow:
 
 ```bash
+bench --site "$TARGET_SITE" ucm-migration stage /srv/approved/DEMO01/handoff.json
 export RUN_ID="$(jq -er '.run' /srv/approved/DEMO01/handoff.json)"
-bench --site "$TARGET_SITE" execute ucm_migration_loader.publication_transport.receive \
-  --kwargs "$(jq -nc --arg run "$RUN_ID" '{run:$run}')"
 ```
 
-At **Publication staged**, the receiver has verified the file and recorded the planned batch count. Applied batches should be zero. Desk shows a short ID such as `MIG-0028`. CLI commands use the full digest in `RUN_ID`.
+The run is then **Staged**: the site has verified the file and recorded its batch count, and nothing is written. Desk shows a short ID such as `MIG-0028`. The commands use the run's whole identifier, in `RUN_ID`.
 
 ## Operate the run in Desk
 
 1. Search Desk for **UCM Migration Run** and open the staged run. Choose **Migration → Configure write routes**. Either set **Route for the delegation** to **Set-based SQL**, which loads the whole delegation in sets (see [Set-based SQL route](#set-based-sql-route)), or leave it at **Chosen per DocType** and select, for example, **Validated bulk SQL** for Person and **Document API** for Person Note. Click **Save routes**. All published parent DocTypes support either per-DocType route. The saved plan locks once apply starts, and the form shows it as **Write route**.
 2. Choose **Migration → Apply hidden batches**. **Refresh progress** shows committed and remaining batches. **View batches** opens receipts for this run. Open an individual receipt to see its sequence, published DocType, actual write route and digest.
-3. At **Publication ready**, read the overview on the form, and choose **Download report** for the full record. The worker compares counts, stored fields, child order, historical audit fields, attachments and references against the publication. Deferred assignments and shares are counted separately. A failed check blocks activation.
+3. When the run is **Verified, waiting for decision**, read the overview on the form, and choose **Download report** for the whole record. The worker compares counts, stored fields, child order, historical audit fields, attachments and references against the publication. Deferred assignments and shares are counted separately. A failed check blocks activation.
 4. After review, choose **Activate delegation**. Activation rechecks the import, releases eligible assignments and shares, and opens the context. **UCM Migration Held Share** records historical shares whose receiving delegation is inactive. UCM rechecks consent and eligibility when that delegation goes live. Once the delegation is open, the site removes its copy of the sealed file: the run keeps its report and its receipts, and a held share keeps what its release needs. The worker opens the delegation after the request; the form follows it and shows the open delegation without a refresh.
 
 ### What the list and the form show
 
-The **UCM Migration Run** list has one row per run: its short ID, a state, the delegation, the route, the records published and the time the load worked. The state reads as the migration team needs it: **Proposed, to approve**, **Waiting for the file**, **Staged**, **Loading, 62 %**, **Paused**, **Verification failed**, **Verified, waiting for decision**, **Activated**, **Discarding**, **Discarded** or **Refused**. Filter by delegation, state or route.
+The **UCM Migration Run** list has one row per run: its short ID, a state, the delegation, the route, the records published and the time the load worked. The state reads as the migration team needs it: **Proposed, to approve**, **Waiting for the file**, **Staged**, **Loading, 62 %**, **Paused**, **Verification failed**, **Verified, waiting for decision**, **Activated**, **Discarding**, **Discarded** or **Refused**. Filter by delegation, state or route. A script reads the state as it is stored, in the answers of `ucm-push`: `Proposed`, `Awaiting publication`, `Publication staged`, `Publication applying`, `Publication paused`, `Publication ready`, `Publication cleaning`, `Activated`, `Discarded` or `Rejected`.
 
-![The run list with state, delegation, route, records and duration](docs/screenshots/run-list.png)
+![The run list with state, delegation, route, records and duration](docs/images/user-guide/run-list.png)
 
 A run's form opens on an overview, read from what the run keeps and refreshed every ten seconds while the run waits for its file, or a load or a discard is at work. The actions are offered to a Migration Admin; who only reads the run sees the overview and no action:
 
@@ -249,15 +247,15 @@ A load or a discard whose job is gone says so in red above the overview, with th
 
 A run that waits for the go-live decision says so above the overview and offers **Activate delegation** as its main button. The form has no **Save**: a run changes through its actions only.
 
-![A verified run waiting for the go-live decision: steps with times, run facts and the rows on both sides](docs/screenshots/run-waiting-for-decision.png)
+![A verified run waiting for the go-live decision: steps with times, run facts and the rows on both sides](docs/images/user-guide/run-ready.png)
 
 A run whose verification found something stays paused and hidden, whatever the severity of the findings:
 
-![A run paused by its verification, with the findings by severity and their first place in the publication](docs/screenshots/run-verification-failed.png)
+![A run paused by its verification, with the findings by severity and their first place in the publication](docs/images/user-guide/run-findings.png)
 
 A sealed file the site refuses at staging is kept as a **Refused** run, so that the refusal is not only a line in a terminal. It shows what differs: the tables whose columns differ from this site, the application versions, or the record IDs that are already there. A refused run holds no staged file and no rows; the file that arrived is kept beside the staged ones. Staging it again, after the cause is corrected, checks it from the start and continues in the same run. **Migration → Remove arrived file** removes it where the publication itself is wrong: the run stays, and says who removed its file.
 
-![A refused run: the staging step failed because the publication's record IDs are already on the site](docs/screenshots/run-refused.png)
+![A refused run: the staging step failed because the publication's record IDs are already on the site](docs/images/user-guide/run-refused.png)
 
 ## Hand the metrics to the data quality database
 
@@ -301,20 +299,6 @@ create table if not exists `ucm_target_metric` (
 )
 ```
 
-## More screens
-
-**Write routes on a staged run**
-
-![Desk dialog selecting Validated bulk SQL for Person and Document API for Person Note](docs/screenshots/write-routes.png)
-
-**A reconciled run with two committed batches**
-
-![Migration Run progress and actions including Download report and Activate delegation](docs/screenshots/migration-run.png)
-
-**View batches filtered to one run**
-
-![Two ordered batch receipts linked to migration run MIG-0028](docs/screenshots/batch-receipts.png)
-
 ## All CLI commands
 
 These examples reuse the Bash arrays and variables from steps 2 and 3. For operator actions, run in a separate shell with the same target variables and a **Migration Admin's** token. Commands such as `apply` enqueue work. Poll `status` for the resulting state.
@@ -349,8 +333,8 @@ The CLI accepts the legacy spellings `activity-order` for `upload-order` and `fr
 | Upload interrupted | Check `transfer-status` and repeat `send-publication` using the same approved file and digest. |
 | Paused or not activated, with *Published … fields differ on target* and the fields' names | UCM on this site stores those fields otherwise than the publication holds them: a rule of UCM fills or changes them, or this UCM no longer has them. Check that the site runs the UCM release the publication was made for; the finding names the fields, never their values. |
 | Apply interrupted | Check `status` or the run's **Finding**. Each successful business batch and its receipt commit together. Resume with `apply` after correcting the reported issue. |
-| Source data needs correction | Review and discard the hidden run, correct the source, then prepare a new full publication with a new snapshot identity. |
-| Write-route menu missing | Open a full **Publication staged** run before its first apply request. |
+| Source data needs correction | Review and discard the hidden run, correct the source, then prepare a new publication under a new snapshot name. |
+| Write-route menu missing | Open a **Staged** run, before its first load. |
 | Staging refused | Open the **Refused** run the staging left: its first step says what differs. Correct the site (release, reference data), then choose **Migration → Stage now**. Where the publication itself is wrong, choose **Migration → Remove arrived file** (or `ucm-push discard`) and prepare a new publication: nothing else removes the file that arrived for a refused run. |
 | The form says **No job is working on this load** (or discard) | The job's process was killed or its worker went down. The run kept its state and nothing is half written: every batch with a receipt is stored whole, and the rows of the batch that was being written are gone. Choose **Migration → Resume from last receipt** (or **Resume cleanup**): the load goes on after the last receipt, and the verification after the last batch it had compared. |
 | Paused with `apply after committed batch N: OperationalError` | The job lost its database connection, and took a new one to record it. Check the database, then **Resume from last receipt**. |
@@ -361,7 +345,7 @@ The CLI accepts the legacy spellings `activity-order` for `upload-order` and `fr
 
 ## Set-based SQL route
 
-The document routes save every published record through its controller, about a hundred records a second. The set-based route copies the published rows into UCM's tables with multi-row inserts and applies the rules afterwards, over the whole delegation. On a 10,000-person delegation of 243,000 rows it reached **Publication ready** in three to four minutes where the document route took 49, with the same stored rows ([measurements](REHEARSALS.md#set-based-sql-route)).
+The document routes save every published record through its controller, about a hundred records a second. The set-based route copies the published rows into UCM's tables with multi-row inserts and applies the rules afterwards, over the whole delegation. A 10,000-person delegation of 243,000 rows was loaded and verified in two to four minutes by this route, where the Document API route took 40 to 50 and six more to activate, with the same stored rows. The times were measured on a development site on different days, and vary with what else the site holds ([measurements](REHEARSALS.md#set-based-sql-route)).
 
 Choose it per run in **Configure write routes**, or from the receiving bench:
 
@@ -370,7 +354,7 @@ bench --site "$TARGET_SITE" execute ucm_migration_loader.write_routes.select \
   --kwargs "$(jq -nc --arg run "$RUN_ID" '{run:$run, route:"Set-based SQL"}')"
 ```
 
-![Desk dialog with Set-based SQL chosen as the route for the delegation](docs/screenshots/set-based-route.png)
+![The dialog that chooses the write route, set to Set-based SQL](docs/images/user-guide/write-route.png)
 
 To make it the route every newly staged run starts with, set it on the site. An operator can still change a staged run before its first apply.
 
@@ -385,13 +369,11 @@ Everything else is operated as before: **Apply hidden batches**, **Pause after c
 | Writing *DocType* | Inserts the rows of up to 5,000 parent records per transaction, with their child rows, private pictures and batch receipts. Sensitivity tags are saved through their documents | After the last committed batch |
 | Deriving | Sets the values a save would derive, for this delegation only: an activity's place type, country and areas from its Place, the department and country copies on history rows and notes, the share facts and the latest-state marks | Runs again; rows that already hold the value are not written |
 | Verifying | Compares every stored column with the publication, batch by batch, and passes one record in fifty through the document route's own check | After the last compared batch |
-| Ready for activation | Counts the delegation, counts the rows that break a rule a query can check (required fields, options, links, option sets and collections, links that leave the context, places, a relationship recorded twice, history locks), and compares the receipts with the publication. With no finding the run becomes **Publication ready** and the report can be downloaded | — |
-
-![A set-based run at Publication ready, with its write route, phase and the Activate delegation action](docs/screenshots/set-based-ready.png)
+| Ready for activation | Counts the delegation, counts the rows that break a rule a query can check (required fields, options, links, option sets and collections, links that leave the context, places, a relationship recorded twice, history locks), and compares the receipts with the publication. With no finding the run becomes **Verified, waiting for decision** and the report can be downloaded | — |
 
 A job works for about two minutes on the batches and then hands over to the next job. A pause takes effect at the next transaction while writing and within about ten seconds while verifying, and a restarted worker loses at most one transaction. The live-load thresholds below pause this route as well. A failed step pauses the run with its finding; **Resume from last receipt** continues from the phase and batch it had reached.
 
-Activation releases the held assignments and shares through their documents and opens the context in one transaction. Its job is given an hour, and ten minutes for every 100,000 rows where that is more: a job cut off by its time limit would lose the whole transaction, and meet the same limit when asked again. On the document routes the activation reads every record once more, about two and a half minutes for 100,000 rows on a development bench, in that one transaction; the set-based route does not, and is the route for a large delegation. It reads the row counts and receipts again; it does not read every record again, because the context has been locked and hidden since the verification. **Discard run** removes the delegation's rows by primary key, 5,000 at a time, on either route, and removes the site's copy of the sealed file.
+Activation releases the held assignments and shares through their documents and opens the context in one transaction. Its job is given an hour, and ten minutes for every 100,000 rows where that is more: a job cut off by its time limit would lose the whole transaction, and meet the same limit when asked again. On this route it reads the row counts and receipts again; it does not read every record again, because the context has been locked and hidden since the verification. On the document routes the activation does read every record once more, about two and a half minutes for 100,000 rows on a development bench, in that one transaction: this route is the one for a large delegation. **Discard run** removes the delegation's rows by primary key, 5,000 at a time, on either route, and removes the site's copy of the sealed file.
 
 To have more records checked through the documents, lower the sampling interval on the site; `1` checks every record, at the document route's speed for that phase.
 
@@ -407,7 +389,7 @@ Know these limits before choosing the route:
 - A private picture keeps its published file name. The document routes may store the same bytes under another name.
 - Assignments and shares are released in one transaction at activation, as on the document routes. A delegation with 11,000 shares had an activation of about three minutes.
 - A share that UCM's current rules no longer allow stops the verification, with its batch and item in the finding. Correct the consent or the publication and resume.
-- The largest delegation loaded by this route had 1.25 million rows and reached **Publication ready** in 10.5 minutes on a quiet development site, and in 13 minutes while eight simulated caseworkers worked in other delegations without a failed request or a lock wait. A discard disturbed them more than a load did: schedule it, like a load, outside the busiest hours. Rehearse a delegation of the expected size on a production-like environment before relying on the figures.
+- The largest delegation loaded by this route had 1.25 million rows and was loaded and verified in 10.5 minutes on a quiet development site, and in 13 minutes while eight simulated caseworkers worked in other delegations without a failed request or a lock wait. A discard disturbed them more than a load did: schedule it, like a load, outside the busiest hours. Rehearse a delegation of the expected size on a production-like environment before relying on the figures.
 
 ## Limits and edge cases
 

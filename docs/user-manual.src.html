@@ -276,7 +276,7 @@ Run f1f73460c949…: Staged: checked, nothing written yet.</code></pre>
 <figure class="shot"><img src="images/user-guide/migration-menu.png" alt="The Migration menu of a staged run"><figcaption>The Migration menu of a staged run.</figcaption></figure>
 <table><thead><tr><th scope="col">Route</th><th scope="col">What it does</th></tr></thead><tbody>
 <tr><th scope="row">Set-based SQL</th><td>Writes the whole delegation in sets, then derives and verifies it as a whole. The fast route, for the whole delegation or not at all.</td></tr>
-<tr><th scope="row">Document API</th><td>Saves every record through UCM's own document logic, one at a time. The slowest and the most literal, for a small delegation: on a development bench 10,000 persons with their 243,000 rows took about 40 minutes to load and 6 minutes to activate this way, against about 2 minutes to load by the set-based route.</td></tr>
+<tr><th scope="row">Document API</th><td>Saves every record through UCM's own document logic, one at a time. The slowest and the most literal, for a small delegation: on a development bench 10,000 persons with their 243,000 rows took 40 to 50 minutes to load and 6 minutes to activate this way, against 2 to 4 minutes to load by the set-based route.</td></tr>
 <tr><th scope="row">Validated bulk SQL</th><td>Chosen per DocType, beside the Document API, under <strong>Chosen per DocType</strong>.</td></tr>
 </tbody></table>
 <p>Set <strong>Route for the delegation</strong> as your migration lead has decided for this wave, and click <strong>Save routes</strong>. The route cannot be changed once the load has started.</p>

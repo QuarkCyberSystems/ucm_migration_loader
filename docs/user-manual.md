@@ -405,7 +405,7 @@ Every action on a run is in the **Migration** menu. Before the first load, choos
 | Route | What it does |
 |---|---|
 | **Set-based SQL** | Writes the whole delegation in sets, then derives and verifies it as a whole. The fast route, for the whole delegation or not at all. |
-| **Document API** | Saves every record through UCM's own document logic, one at a time. The slowest and the most literal, for a small delegation: on a development bench 10,000 persons with their 243,000 rows took about 40 minutes to load and 6 minutes to activate this way, against about 2 minutes to load by the set-based route. |
+| **Document API** | Saves every record through UCM's own document logic, one at a time. The slowest and the most literal, for a small delegation: on a development bench 10,000 persons with their 243,000 rows took 40 to 50 minutes to load and 6 minutes to activate this way, against 2 to 4 minutes to load by the set-based route. |
 | **Validated bulk SQL** | Chosen per DocType, beside the Document API, under **Chosen per DocType**. |
 
 Set **Route for the delegation** as your migration lead has decided for this wave, and click **Save routes**. The route cannot be changed once the load has started.
