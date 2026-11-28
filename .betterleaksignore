@@ -1,0 +1,5 @@
+# Findings accepted after review, as betterleaks fingerprints (commit:path:rule:line).
+# Placeholder in a unit test's connection file; the test checks that it is never sent.
+5c67d6da642787fe53e73a5f63185b41bbf73b67:tests/test_push_quality.py:generic-password:181
+# The manual's sample of a connection file, where the password is a description in angle brackets.
+5f7209097204ffada03a1f4a4e5267186bd27c0c:docs/user-manual.html:generic-password:93
