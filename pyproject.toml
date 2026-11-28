@@ -1,6 +1,6 @@
 [project]
 name = "ucm_migration_loader"
-version = "0.1.0"
+dynamic = ["version"]
 description = "UCM publishing client and target migration app"
 requires-python = ">=3.11"
 dependencies = ["PyMySQL>=1.1", "requests>=2.32"]
@@ -13,7 +13,7 @@ requires = ["flit_core>=3.10,<4"]
 build-backend = "flit_core.buildapi"
 
 [tool.bench.frappe-dependencies]
-frappe = ">=16,<17"
+frappe = ">=16.0.0,<17.0.0"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
