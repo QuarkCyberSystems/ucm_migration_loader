@@ -8,7 +8,7 @@ Migrate one delegation from a published MariaDB snapshot into a shared UCM site.
 | Receiving site | Frappe app and migration worker | The site's existing database and private file storage. A **Migration Admin** approves hand-offs and controls apply, pause, discard and activation. A System Manager reads the runs and gives that role |
 | Desk | UCM Migration Run, UCM Migration Batch, UCM Migration Held Share | Operators review progress, write routes, committed batches, reconciliation and historical shares |
 
-**Operating a migration?** The [user manual](docs/user-manual.html) takes the publishing operator, the site operator and the migration team through a delegation step by step, with pictures of every screen. Open the file in a browser. This README is the technical reference.
+**Operating a migration?** The [user manual](docs/user-manual.html) takes the publishing operator, the site operator and the migration team through a delegation step by step, with pictures of every screen, and the site administrator through preparing the site. Open the file in a browser. This README is the technical reference.
 
 [Install](#install) · [The short way](#the-short-way) · [Prepare and send a delegation](#prepare-and-send-a-delegation) · [Operate the run in Desk](#operate-the-run-in-desk) · [Set-based SQL route](#set-based-sql-route) · [All CLI commands](#all-cli-commands) · [Recovery](#recovery)
 
