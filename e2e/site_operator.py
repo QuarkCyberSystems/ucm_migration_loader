@@ -6,6 +6,7 @@ waits for the file.
 	env/bin/python apps/ucm_migration_loader/e2e/site_operator.py --site <site> \
 		--handoff <handoff.json> --publisher <account> [--shots]
 	env/bin/python apps/ucm_migration_loader/e2e/site_operator.py --site <site> --reader <run> --as <account>
+	env/bin/python apps/ucm_migration_loader/e2e/site_operator.py --site <site> --refused <run>
 
 Run from the bench, on a development site that is being served. The first form approves a hand-off its publishing
 account proposed with `ucm-push propose`, by the check code that command gave; a wrong code is tried first and
@@ -14,7 +15,8 @@ is real: the run is left waiting for its file, and is staged by the site's worke
 (`tests/operator_flow.py --desk` sends it). With `--shots`
 the dialog and the waiting run are saved as pictures of the user manual. The third form opens a run as an account
 that reads runs without the Migration Admin role, a System Manager for instance, and checks that the form offers
-it no action. A session is opened for the Administrator, or for the account named, as `bench browse` does, and
+it no action. The fourth opens a run the site refused, removes the file that arrived for it, and checks that
+the run stays refused, says who removed the file, and offers neither the staging nor the removal again. A session is opened for the Administrator, or for the account named, as `bench browse` does, and
 closed at the end. Needs Playwright and Chromium. Synthetic data only.
 """
 
@@ -117,6 +119,31 @@ def reads_only(page, run: str) -> str:
 	return run
 
 
+def remove_refused(page, run: str) -> str:
+	"""A Migration Admin removes the file that arrived for a refused run: the run stays, as the record."""
+	page.goto(f"/desk/ucm-migration-run/{run}", wait_until="networkidle")
+	overview = page.locator('.frappe-control[data-fieldname="overview"]').locator("visible=true")
+	expect(overview.get_by_text("Steps", exact=True)).to_be_visible()
+	menu = page.locator(".inner-group-button", has_text="Migration").locator("visible=true").first
+	offered = {text.strip() for text in menu.locator(".dropdown-item").all_inner_texts()}
+	if not {"Stage now", "Remove arrived file"} <= offered:
+		raise SystemExit(f"A refused run offers: {sorted(offered)}")
+	menu.locator("button").first.click()
+	# the opened menu is drawn apart from the group's own list of items
+	page.locator(".es-menu__item:visible", has_text="Remove arrived file").click()
+	question = page.locator(".modal-dialog:visible", has_text="cannot be staged afterwards")
+	expect(question).to_be_visible()
+	question.get_by_role("button", name="Yes", exact=True).click()
+	expect(overview.get_by_text("The file that arrived was removed from the site by")).to_be_visible(
+		timeout=30000
+	)
+	menu = page.locator(".inner-group-button", has_text="Migration").locator("visible=true").first
+	offered = {text.strip() for text in menu.locator(".dropdown-item").all_inner_texts()}
+	if offered & {"Stage now", "Remove arrived file"}:
+		raise SystemExit(f"A refused run whose file is removed still offers: {sorted(offered)}")
+	return run
+
+
 def main() -> None:
 	parser = argparse.ArgumentParser(
 		description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -128,19 +155,29 @@ def main() -> None:
 	parser.add_argument("--publisher", help="The publishing account, with --handoff")
 	parser.add_argument("--reader", metavar="RUN", help="Check that this run offers a reader no action")
 	parser.add_argument("--as", dest="account", help="The account that reads, with --reader")
+	parser.add_argument("--refused", metavar="RUN", help="Remove the file that arrived for this refused run")
 	parser.add_argument(
 		"--shots", action="store_true", help="Save the dialog and the waiting run as pictures"
 	)
 	args = parser.parse_args()
-	ways = (args.proposed and args.code, args.handoff and args.publisher, args.reader and args.account)
+	ways = (
+		args.proposed and args.code,
+		args.handoff and args.publisher,
+		args.reader and args.account,
+		args.refused,
+	)
 	if sum(bool(way) for way in ways) != 1:
-		parser.error("Give --proposed with --code, --handoff with --publisher, or --reader with --as")
+		parser.error(
+			"Give --proposed with --code, --handoff with --publisher, --reader with --as, or --refused"
+		)
 	handoff = args.handoff.resolve() if args.handoff else None
 	errors = []
 	with desk(args.site, args.account or "Administrator") as page:
 		page.on("pageerror", lambda error: errors.append(str(error)))
 		if args.reader:
 			run = reads_only(page, args.reader)
+		elif args.refused:
+			run = remove_refused(page, args.refused)
 		elif args.proposed:
 			run = approve_proposed(page, args.proposed, args.code, args.shots)
 		else:
@@ -149,6 +186,8 @@ def main() -> None:
 		raise SystemExit(f"The page raised errors: {errors[:3]}")
 	if args.reader:
 		print(f"Read in the Desk as {args.account}: run {run} offers no action")
+	elif args.refused:
+		print(f"Removed in the Desk: the file that arrived for the refused run {run}")
 	else:
 		print(f"Approved in the Desk: run {run} waits for its file")
 

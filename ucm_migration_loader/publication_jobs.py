@@ -29,6 +29,8 @@ def request(run, action, max_batches=None):
 	waiting = frappe.db.get_value(constants.RUN, run, "state", for_update=True)
 	if action == "discard" and waiting in (constants.AWAITING, constants.PROPOSED):
 		return _withdraw(run)
+	if action == "discard" and waiting == constants.REJECTED:
+		return _clear_refused(run)
 	ctx, record = lock_run(run)
 	if action == "discard" and record.state == constants.DISCARDED:
 		from .publication_receiver import remove_after_discard
@@ -67,6 +69,22 @@ def request(run, action, max_batches=None):
 		"requested": action,
 		"applied": record.applied or 0,
 	}
+
+
+def _clear_refused(run):
+	"""Remove what a refused run keeps on the site: the file that arrived, and its approval. The run stays as
+	the record of the refusal and of what differed, and says who removed its file; that file cannot be staged
+	afterwards, and a corrected publication is sealed and approved anew."""
+	from .publication_receiver import remove_arrived, remove_staged_file
+
+	approval = json.loads(frappe.db.get_value(constants.RUN, run, "approval_json") or "{}")
+	if not approval.get("removed_on"):
+		approval.update(removed_by=frappe.session.user, removed_on=str(now_datetime()))
+		frappe.db.set_value(constants.RUN, run, "approval_json", json.dumps(approval))
+	# under its staged name too, where a staging died after the rename and the next one refused the file
+	remove_staged_file(run)
+	remove_arrived(run)
+	return {"run": run, "state": constants.REJECTED, "requested": "discard", "applied": 0}
 
 
 def _withdraw(run):

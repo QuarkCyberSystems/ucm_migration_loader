@@ -510,6 +510,45 @@ class TestStagingAfterArrival(OperatorCase):
 		self.assertEqual(code, 1)
 		self.assertIn(f"Refused, and kept as {record.display_id}", text)
 
+	def test_a_refused_run_s_file_can_be_removed(self):
+		"""Nothing else removes it: a refused run keeps what arrived, to be staged again once the site is
+		brought in line. Where the publication itself is wrong, a Migration Admin removes the file, and the run
+		stays as the record of the refusal."""
+		path, run, handoff = self.sealed(versions={"ucm": "0.0.0-not-this-site"})
+		operator.approve(handoff, self.publisher)
+		self.send(path, run)
+		with patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
+			publication_transport.stage_arrived(run)
+		arrived, inbox = publication_receiver.arriving(run), publication_transport.folder(run)
+		self.assertTrue(arrived.is_file())
+		frappe.set_user(self.publisher)
+		self.assertRaises(frappe.PermissionError, api.discard, run)
+		frappe.set_user(self.admin)
+		frappe.db.after_commit.reset()  # what earlier tests of the class left for a commit that never came
+		result = api.discard(run)
+		self.assertEqual((result["state"], result["requested"]), ("Rejected", "discard"))
+		self.assertTrue(arrived.is_file())  # not before the commit
+		frappe.db.after_commit.run()
+		self.assertFalse(arrived.exists() or inbox.exists())
+		record = frappe.get_doc(constants.RUN, run)
+		self.assertEqual(
+			(record.state, record.finding), ("Rejected", "Preflight refused: application versions differ")
+		)
+		self.assertEqual(json.loads(record.approval_json)["removed_by"], self.admin)
+		shown = desk.overview(run)["steps"]
+		self.assertEqual([(step["step"], step["status"]) for step in shown], [("stage", "failed")])
+		self.assertEqual(shown[0]["facts"]["removed_by"], self.admin)
+		self.assertIn("ucm", shown[0]["facts"]["release_differences"])
+		# nothing is left to stage, and asking twice changes nothing
+		self.assertEqual(desk.stage_now(run)["outcome"], "not approved")
+		first = record.approval_json
+		api.discard(run)
+		self.assertEqual(frappe.db.get_value(constants.RUN, run, "approval_json"), first)
+		# the same file is not approved again: a corrected publication is a new one
+		self.assertRaisesRegex(
+			frappe.ValidationError, "already on the site", operator.approve, handoff, self.publisher
+		)
+
 	def test_the_desk_hands_the_staging_to_the_worker(self):
 		"""A large file takes longer to check than a request may last: the Desk queues the staging, in the name
 		of the Migration Admin who asks."""

@@ -284,6 +284,16 @@ def test_a_refused_publication_shows_what_differs():
 	assert steps == [{"step": "stage", "status": "failed", "seconds": 1.5, "facts": preflight}]
 
 
+def test_a_refused_publication_says_who_removed_its_file():
+	preflight = {"schema_differences": ["Case"], "release_differences": {}, "existing_keys": {}}
+	removed = {"removed_by": "admin@example.org", "removed_on": "2026-11-28 10:00:00"}
+	approval = {"by": "admin@example.org", "publisher": "sender@example.org", **removed}
+	steps = run_overview.steps(
+		run("Rejected", approval=approval), [], {}, {"preflight": preflight}, {"stage": {"seconds": 1.5}}, {}
+	)
+	assert steps[0]["facts"] == {**preflight, **removed}
+
+
 def test_records_show_both_sides_and_what_activation_released():
 	hidden = {row["doctype"]: row for row in run_overview.records(REPORT["published_rows"], REPORT, False)}
 	assert (

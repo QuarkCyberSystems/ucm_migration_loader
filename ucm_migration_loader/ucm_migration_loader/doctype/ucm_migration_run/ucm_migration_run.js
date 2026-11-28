@@ -85,7 +85,17 @@ function show_actions(frm, group) {
 				"Withdraw the approval of this publication? What has arrived of its file is removed."
 			)
 		);
-	} else if (![STATE.ACTIVATED, STATE.DISCARDED, STATE.REJECTED].includes(state)) {
+	} else if (state === STATE.REJECTED) {
+		// the refused run stays as the record; what it still holds on the site can go
+		if (!file_removed(frm))
+			action(
+				__("Remove arrived file"),
+				"discard",
+				__(
+					"Remove the file that arrived for this refused run? It cannot be staged afterwards: a corrected publication is sealed and approved anew."
+				)
+			);
+	} else if (![STATE.ACTIVATED, STATE.DISCARDED].includes(state)) {
 		action(
 			__("Discard run"),
 			"discard",
@@ -94,13 +104,18 @@ function show_actions(frm, group) {
 			)
 		);
 	}
-	if ([STATE.AWAITING, STATE.REJECTED].includes(state)) {
+	if ([STATE.AWAITING, STATE.REJECTED].includes(state) && !file_removed(frm)) {
 		// staging follows the file's arrival by itself; this asks for it again, after a failure or a refusal
 		frm.add_custom_button(__("Stage now"), () => stage_now(frm), group);
 	}
 	if (frm.doc.reconciliation_json) {
 		frm.add_custom_button(__("Download report"), () => download_report(frm), group);
 	}
+}
+
+// Whether the file that arrived for a refused run was removed from the site since.
+function file_removed(frm) {
+	return Boolean(JSON.parse(frm.doc.approval_json || "{}").removed_on);
 }
 
 // The lists of the shares this run held back, for who reads the run.
@@ -428,6 +443,13 @@ function refusal(facts) {
 		parts.push(
 			__("{0} share receipts already kept for these IDs", [
 				number(facts.existing_share_receipts),
+			])
+		);
+	if (facts.removed_on)
+		parts.push(
+			__("The file that arrived was removed from the site by {0} on {1}", [
+				facts.removed_by,
+				frappe.datetime.str_to_user(facts.removed_on),
 			])
 		);
 	return parts.join(" · ");

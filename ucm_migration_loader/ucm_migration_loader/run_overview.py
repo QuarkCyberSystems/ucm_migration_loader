@@ -137,7 +137,12 @@ def steps(
 	failed, decision, stopped), its seconds where they were measured, and the numbers its line shows."""
 	state, staged = run["state"], timeline.get("stage", {})
 	if state == REJECTED:
-		return [_step("stage", "failed", staged.get("seconds"), report.get("preflight"))]
+		# what differed; and who removed the file that arrived, once it is removed
+		approval = run.get("approval") or {}
+		removed = {key: approval[key] for key in ("removed_by", "removed_on") if approval.get("removed_on")}
+		return [
+			_step("stage", "failed", staged.get("seconds"), {**(report.get("preflight") or {}), **removed})
+		]
 	if state in (AWAITING, PROPOSED):
 		# proposed, or approved with its file on the way: nothing else has begun
 		arriving = run.get("approval") or {}
@@ -271,7 +276,7 @@ def _parts(record) -> tuple:
 	report, timeline = _json(record.reconciliation_json), _json(record.get("timeline_json"))
 	progress, handover = _json(record.get("reconcile_counts")), _json(record.get("quality_json"))
 	run = {
-		"approval": _approval(record) if record.state in (AWAITING, PROPOSED) else None,
+		"approval": _approval(record) if record.state in (AWAITING, PROPOSED, REJECTED) else None,
 		"state": record.state,
 		"route": route_of(_json(record.write_plan_json)),
 		"batches": record.received,
@@ -301,7 +306,10 @@ def _approval(record) -> dict:
 	from ucm_migration_loader.publication_transport import folder, progress
 
 	approval = _json(record.get("approval_json"))
-	out = {key: approval.get(key) for key in ("by", "on", "publisher", "proposed_by", "proposed_on")}
+	out = {
+		key: approval.get(key)
+		for key in ("by", "on", "publisher", "proposed_by", "proposed_on", "removed_by", "removed_on")
+	}
 	out["bytes"] = approval.get("size")
 	out["arrived"] = 0
 	if (
