@@ -85,7 +85,7 @@ On a disposable site, stage a fresh generated context containing 60 Persons and 
 
 ### Set-based SQL route
 
-`ucm_migration_loader.ucm_migration_loader.set_based` loads a staged publication without saving each record through its controller. An operator chooses it for a staged run ([operator guide](README.md#set-based-sql-route)); the migration queue then runs it in jobs, each taking one step from where the last one stopped. It uses the same staged file, hash index, run record, batch receipts and hidden context as the document route. Sensitivity tags, assignments and shares still go through the documents.
+`ucm_migration_loader.ucm_migration_loader.set_based` loads a staged publication without saving each record through its controller. An operator chooses it for a staged run ([operator guide](docs/reference.md#set-based-sql-route)); the migration queue then runs it in jobs, each taking one step from where the last one stopped. It uses the same staged file, hash index, run record, batch receipts and hidden context as the document route. Sensitivity tags, assignments and shares still go through the documents.
 
 The same steps can be called one at a time from the receiving bench, which is how the timings below were taken:
 

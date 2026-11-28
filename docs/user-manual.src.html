@@ -401,7 +401,7 @@ Run f1f73460c949…: Staged: checked, nothing written yet.</code></pre>
 <tr><th scope="row"><code>ucm-push quality</code></th><td>Collect the run's metrics for the data quality database.</td></tr>
 <tr><th scope="row"><code>ucm-push locate-item</code></th><td>Name the record at a batch and item of the sealed file.</td></tr>
 </tbody></table>
-<p>The detailed commands behind these (<code>prepare</code>, <code>check-publication</code>, <code>send-publication</code> and others) take every value as an option. They are described in the repository's README, for scripts.</p>
+<p>The detailed commands behind these (<code>prepare</code>, <code>check-publication</code>, <code>send-publication</code> and others) take every value as an option. They are described in the repository, in <code>docs/detailed-commands.md</code>, for scripts.</p>
 <h3>Roles</h3>
 <table><thead><tr><th scope="col">Role</th><th scope="col">For</th><th scope="col">May</th></tr></thead><tbody>
 <tr><th scope="row">Migration Admin</th><td>The migration team</td><td>Approve or decline hand-offs, load, pause, activate and discard. Every action on a run needs this role.</td></tr>
@@ -409,7 +409,7 @@ Run f1f73460c949…: Staged: checked, nothing written yet.</code></pre>
 <tr><th scope="row">System Manager</th><td>The site's administrators</td><td>Read the runs, and give the two roles.</td></tr>
 </tbody></table>
 <h3>Without a browser</h3>
-<p>The approval and the staging can also be given from the site's bench, for scripts: <code>bench --site SITE ucm-migration approve HANDOFF --publisher ACCOUNT</code> and <code>ucm-migration stage HANDOFF</code>. The repository's README describes them.</p>
+<p>The approval and the staging can also be given from the site's bench, for scripts: <code>bench --site SITE ucm-migration approve HANDOFF --publisher ACCOUNT</code> and <code>ucm-migration stage HANDOFF</code>. The same page of the repository, <code>docs/detailed-commands.md</code>, describes them.</p>
 <h3>Settings of the site</h3>
 <p>Set by the site administrator with <code>bench --site &lt;site&gt; set-config</code>. A running site reads a changed setting within a minute.</p>
 <table><thead><tr><th scope="col">Setting</th><th scope="col">Effect</th></tr></thead><tbody>

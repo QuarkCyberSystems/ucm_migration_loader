@@ -585,7 +585,7 @@ Each takes the snapshot's name, or nothing from inside its folder.
 | `ucm-push quality` | Collect the run's metrics for the data quality database. |
 | `ucm-push locate-item` | Name the record at a batch and item of the sealed file. |
 
-The detailed commands behind these (`prepare`, `check-publication`, `send-publication` and others) take every value as an option. They are described in the repository's README, for scripts.
+The detailed commands behind these (`prepare`, `check-publication`, `send-publication` and others) take every value as an option. They are described in the repository, in `docs/detailed-commands.md`, for scripts.
 
 ### Roles
 
@@ -597,7 +597,7 @@ The detailed commands behind these (`prepare`, `check-publication`, `send-public
 
 ### Without a browser
 
-The approval and the staging can also be given from the site's bench, for scripts: `bench --site SITE ucm-migration approve HANDOFF --publisher ACCOUNT` and `ucm-migration stage HANDOFF`. The repository's README describes them.
+The approval and the staging can also be given from the site's bench, for scripts: `bench --site SITE ucm-migration approve HANDOFF --publisher ACCOUNT` and `ucm-migration stage HANDOFF`. The same page of the repository, `docs/detailed-commands.md`, describes them.
 
 ### Settings of the site
 

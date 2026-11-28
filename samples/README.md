@@ -62,7 +62,7 @@ A connection over TLS:
   read-only view of the database for a whole sealing.
 - The account of `quality-db.json` writes one table, `ucm_target_metric` unless `quality_table` names another:
   `SELECT`, `INSERT` and `DELETE` on it. A run's rows replace the rows the same run left before. The account
-  needs `CREATE` only if you pass `--create-quality-table`; the table's definition is in the repository's README.
+  needs `CREATE` only if you pass `--create-quality-table`; the table's definition is in the technical reference, `docs/reference.md`.
 
 ## ucm-push.toml
 
