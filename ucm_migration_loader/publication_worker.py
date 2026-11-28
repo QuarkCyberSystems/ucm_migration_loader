@@ -67,37 +67,61 @@ def mapped_row(db, cache, dt, raw, child=False):
 	return row
 
 
-def resolve_reference(db, cache, master, value):
-	identity = (master, value)
-	if identity not in cache:
-		ref = db.execute("select payload from refs where dt=? and id=?", identity).fetchone()
-		if not ref:
-			raise ValueError(f"Missing reference for {master}")
-		attributes = json.loads(ref[0])
-		fields = LOOKUPS[master]
-		if master == "Concept Value":
-			resolved, _ = resolve_term(frappe.db._conn, value, [attributes[k] for k in fields])
-		else:
-			resolved = value
-			if not frappe.db.exists(master, value):
-				matches = frappe.get_all(
-					master,
-					filters={fields[0]: attributes[fields[0]]},
-					pluck="name",
-					limit=2,
-				)
-				resolved = matches[0] if len(matches) == 1 else None
-			if (
-				resolved
-				and dict(frappe.db.get_value(master, resolved, list(fields), as_dict=True)) != attributes
-			):
-				resolved = None
-		if not resolved:
-			raise runs.Unprepared(
-				f"A {master} the delegation refers to is not on this site, or differs from the published one"
+def references(dt, raw):
+	"""The references of a published row that are resolved on the site: the master and the published key of
+	each link to a DocType the publication describes."""
+	row = business(raw)
+	found = [
+		(field.options, row[field.fieldname])
+		for field in frappe.get_meta(dt).fields
+		if field.fieldtype == "Link"
+		and field.options in LOOKUPS
+		and row.get(field.fieldname) not in (None, "")
+	]
+	return list(dict.fromkeys(found))
+
+
+def reference_attributes(db, master, value):
+	"""What the publication says of a reference: the attributes its record on the site must have."""
+	ref = db.execute("select payload from refs where dt=? and id=?", (master, value)).fetchone()
+	if not ref:
+		raise ValueError(f"Missing reference for {master}")
+	return json.loads(ref[0])
+
+
+def resolve_attributes(cache, master, value, attributes):
+	"""Find on the site the record a publication refers to, by the attributes published with it."""
+	fields = LOOKUPS[master]
+	if master == "Concept Value":
+		resolved, _ = resolve_term(frappe.db._conn, value, [attributes[k] for k in fields])
+	else:
+		resolved = value
+		if not frappe.db.exists(master, value):
+			matches = frappe.get_all(
+				master,
+				filters={fields[0]: attributes[fields[0]]},
+				pluck="name",
+				limit=2,
 			)
-		cache[identity] = resolved
-	return cache[identity]
+			resolved = matches[0] if len(matches) == 1 else None
+		if resolved and dict(frappe.db.get_value(master, resolved, list(fields), as_dict=True)) != attributes:
+			resolved = None
+	if not resolved:
+		raise runs.Unprepared(
+			f"A {master} the delegation refers to is not on this site, or differs from the published one"
+		)
+	cache[(master, value)] = resolved
+	return resolved
+
+
+def resolve_reference(db, cache, master, value):
+	"""`db` is the sealed file, or None where the cache already holds every reference of the row: a held
+	share is released from what its run kept, after the file is gone."""
+	if (master, value) not in cache:
+		if db is None:
+			raise ValueError(f"Missing reference for {master}")
+		resolve_attributes(cache, master, value, reference_attributes(db, master, value))
+	return cache[(master, value)]
 
 
 def restore_audit(dt, raw, verified_actors=None):
@@ -750,7 +774,7 @@ def _activate(run):
 							item["doctype"] == "Record Share"
 							and check_share(item["row"], ctx.name) == "receiver_not_active"
 						):
-							held_shares.hold(record, item["row"], seq, position)
+							held_shares.hold(record, item["row"], seq, position, db)
 							held += 1
 							continue
 						release_item(db, cache, item, ctx.name, route=route)

@@ -1157,7 +1157,7 @@ def activate(run: str, commit: bool = True) -> dict:
 							doctype == "Record Share"
 							and check_share(item["row"], ctx.name) == "receiver_not_active"
 						):
-							held_shares.hold(record, item["row"], sequence, position)
+							held_shares.hold(record, item["row"], sequence, position, sealed.db)
 							held += 1
 							continue
 						documents.release_item(sealed.db, cache, item, ctx.name)

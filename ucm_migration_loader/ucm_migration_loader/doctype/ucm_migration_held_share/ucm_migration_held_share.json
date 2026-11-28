@@ -13,7 +13,8 @@
   "item_number",
   "state",
   "finding",
-  "release_run"
+  "release_run",
+  "share_json"
  ],
  "fields": [
   {
@@ -80,10 +81,19 @@
    "label": "Receiving Migration Run",
    "options": "UCM Migration Run",
    "read_only": 1
+  },
+  {
+   "description": "The published share and the references it names, kept for its release. No role reads this level.",
+   "fieldname": "share_json",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Share",
+   "permlevel": 1,
+   "read_only": 1
   }
  ],
  "links": [],
- "modified": "2026-11-27 15:34:59.674070",
+ "modified": "2026-11-28 06:17:00.664343",
  "modified_by": "Administrator",
  "module": "UCM Migration Loader",
  "name": "UCM Migration Held Share",

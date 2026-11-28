@@ -2,7 +2,6 @@
 
 import json
 from collections import Counter
-from hashlib import sha256
 from itertools import groupby
 from operator import attrgetter
 
@@ -10,9 +9,7 @@ import frappe
 
 from . import constants, runs
 from .constants import HELD
-from .contract import digest
-from .frozen import FORMAT, open_sealed, reference_digest
-from .publication_receiver import local_publication, same_target
+from .publication_receiver import same_target
 from .publication_shares import IneligibleShare, check_share
 
 
@@ -22,7 +19,19 @@ def lock_activation():
 	frappe.db.get_value("DocType", constants.RUN, "name", for_update=True)
 
 
-def hold(record, raw, sequence, position):
+def hold(record, raw, sequence, position, db):
+	"""Keep a share to a delegation that is not open yet, with what its release needs: the published row and
+	what the publication says of the references it names. The run's file is removed when the run is activated,
+	so nothing is read from it afterwards. The field that keeps them is at a level no role reads."""
+	from .publication_worker import reference_attributes, references
+
+	kept = {
+		"row": raw,
+		"references": [
+			[master, value, reference_attributes(db, master, value)]
+			for master, value in references("Record Share", raw)
+		],
+	}
 	frappe.get_doc(
 		{
 			"doctype": HELD,
@@ -32,6 +41,7 @@ def hold(record, raw, sequence, position):
 			"sequence_number": sequence,
 			"item_number": position,
 			"state": "Held",
+			"share_json": json.dumps(kept),
 		}
 	).insert(set_name=raw["name"], ignore_permissions=True)
 
@@ -47,12 +57,13 @@ def summary(run):
 
 
 def release_incoming(ctx, receiving_run):
-	from .publication_worker import release_item
+	"""Release the shares other delegations hold for this one, from what their runs kept at activation."""
+	from .publication_worker import release_item, resolve_attributes
 
 	held = frappe.db.get_values(
 		HELD,
 		{"receiver_context": ctx.name, "state": "Held"},
-		["name", "migration_run", "owner_context", "sequence_number", "item_number"],
+		["name", "migration_run", "owner_context", "sequence_number", "item_number", "share_json"],
 		as_dict=True,
 		order_by="migration_run asc, sequence_number asc, item_number asc",
 		for_update=True,
@@ -62,100 +73,82 @@ def release_incoming(ctx, receiving_run):
 		source = runs.record(run)
 		if source.state != constants.ACTIVATED:
 			raise ValueError("Held share source run has not been activated")
-		with open_sealed(local_publication(run)) as db:
-			(descriptor,) = db.execute("select manifest from descriptor").fetchall()
-			manifest = json.loads(descriptor[0])
-			# Only these recorded share batches are consumed. Their target receipts were
-			# created after the original full verification, including its ordered hash chain.
-			if (
-				manifest.get("format") != FORMAT
-				or digest(manifest) != run
-				or reference_digest(db) != manifest["reference_sha256"]
-			):
-				raise ValueError("Held share source descriptor or reference identities differ")
-			if not same_target(manifest, source.context_id, source):
-				raise ValueError("Held share source manifest differs")
-			cache = {}
-			for seq, batch_entries in groupby(entries, key=attrgetter("sequence_number")):
-				sha, payload = db.execute(
-					"select sha,payload from batches where sequence=?", (seq,)
-				).fetchone()
-				receipt = frappe.get_doc(constants.BATCH, f"{run}-{seq}", for_update=True)
-				if (receipt.migration_run, receipt.sequence_number, receipt.digest) != (
-					run,
-					seq,
-					sha,
+		if not same_target(json.loads(source.manifest_json), source.context_id, source):
+			raise ValueError("Held share source manifest differs")
+		cache = {}
+		for seq, batch_entries in groupby(entries, key=attrgetter("sequence_number")):
+			# the receipt of the batch the shares came in, committed with the activation that held them
+			receipt = frappe.get_doc(constants.BATCH, f"{run}-{seq}", for_update=True)
+			if (receipt.migration_run, receipt.sequence_number) != (run, seq):
+				raise ValueError("Held share batch differs from committed receipt")
+			for entry in batch_entries:
+				if not entry.share_json:
+					raise ValueError("Held share was recorded without its row")
+				kept = json.loads(entry.share_json)
+				raw = kept["row"]
+				if (
+					raw["name"],
+					raw["context_tech_id"],
+					entry.owner_context,
+					raw["share_to_context_tech_id"],
+				) != (
+					entry.name,
+					source.context_id,
+					source.context_id,
+					ctx.name,
 				):
-					raise ValueError("Held share batch differs from committed receipt")
-				if sha256(payload).hexdigest() != sha:
-					raise ValueError("Held share payload differs from the committed digest")
-				items = json.loads(payload)
-				for entry in batch_entries:
-					if not 1 <= entry.item_number <= len(items):
-						raise ValueError("Invalid held share position")
-					item = items[entry.item_number - 1]
-					raw = item["row"]
+					raise ValueError("Held share identity differs from the publication")
+				finding = None
+				try:
 					if (
-						item["doctype"],
-						raw["name"],
-						raw["context_tech_id"],
-						entry.owner_context,
-						raw["share_to_context_tech_id"],
-					) != (
-						"Record Share",
-						entry.name,
-						source.context_id,
-						source.context_id,
-						ctx.name,
-					):
-						raise ValueError("Held share identity differs from the publication")
-					finding = None
-					try:
-						if (
-							frappe.db.get_value(
-								"Context",
-								source.context_id,
-								"context_status",
-								for_update=True,
-							)
-							!= "Active"
-						):
-							raise IneligibleShare("Owning delegation is no longer active")
-						if check_share(raw, source.context_id) != "active_receiver":
-							raise IneligibleShare("Historical share is no longer eligible for release")
-						if frappe.db.get_value(
-							"Record Share", raw["name"], "name", for_update=True
-						) or frappe.db.get_value(
-							"Record Share",
-							{
-								"share_doctype": raw["share_doctype"],
-								"share_name": raw["share_name"],
-								"share_to_context_tech_id": ctx.name,
-								"share_status": ["in", ["Accepted", "Pending"]],
-							},
-							"name",
-							for_update=True,
-						):
-							raise IneligibleShare("A live share already exists")
-					except IneligibleShare as exc:
-						finding = str(exc)
-					else:
-						release_item(
-							db,
-							cache,
-							item,
+						frappe.db.get_value(
+							"Context",
 							source.context_id,
-							route=receipt.write_route or "Document API",
+							"context_status",
+							for_update=True,
 						)
-					state = "Review" if finding else "Released"
-					frappe.db.set_value(
-						HELD,
-						entry.name,
+						!= "Active"
+					):
+						raise IneligibleShare("Owning delegation is no longer active")
+					if check_share(raw, source.context_id) != "active_receiver":
+						raise IneligibleShare("Historical share is no longer eligible for release")
+					if frappe.db.get_value(
+						"Record Share", raw["name"], "name", for_update=True
+					) or frappe.db.get_value(
+						"Record Share",
 						{
-							"state": state,
-							"finding": finding,
-							"release_run": receiving_run,
+							"share_doctype": raw["share_doctype"],
+							"share_name": raw["share_name"],
+							"share_to_context_tech_id": ctx.name,
+							"share_status": ["in", ["Accepted", "Pending"]],
 						},
+						"name",
+						for_update=True,
+					):
+						raise IneligibleShare("A live share already exists")
+				except IneligibleShare as exc:
+					finding = str(exc)
+				else:
+					for master, value, attributes in kept["references"]:
+						if (master, value) not in cache:
+							resolve_attributes(cache, master, value, attributes)
+					release_item(
+						None,
+						cache,
+						{"doctype": "Record Share", "row": raw},
+						source.context_id,
+						route=receipt.write_route or "Document API",
 					)
-					outcomes[state] += 1
+				# released or left for review, its copy has served
+				frappe.db.set_value(
+					HELD,
+					entry.name,
+					{
+						"state": "Review" if finding else "Released",
+						"finding": finding,
+						"release_run": receiving_run,
+						"share_json": None,
+					},
+				)
+				outcomes["Review" if finding else "Released"] += 1
 	return dict(outcomes)
