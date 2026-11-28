@@ -120,7 +120,7 @@ Tell the code to the person who approves, by a way that does not pass through th
 
 1. Open **UCM Migration Run**. A proposed hand-off is a run that is **Proposed, to approve**: open it. Its form says which account proposed it and when, and nothing is accepted for it yet.
 2. Click **Approve hand-off**. The dialog shows the delegation, the snapshot, the rows, the file's size, the account that proposed, and whether the site has a context ready. Type the **Check code** the publishing operator told you, and click **Approve**. A code that does not match is refused. You cannot approve a proposal of your own account, nor one of a Migration Admin's. Where the site has no context for the delegation, the approval makes it, locked and hidden, under the published identifier, with the code and the name shown. **Migration → Decline** turns the proposal down.
-3. The publication is now a run that is **Waiting for the file**, and shows how much has arrived. When the whole file is there, the migration worker stages it by itself, in the name of the person who approved: the run becomes **Staged**, or **Refused** with the reason. **Migration → Stage now** asks for the staging again after a failure; **Withdraw approval** takes the approval back. An approval is refused, with the space that is missing, where the site's disk cannot hold the file.
+3. The publication is now a run that is **Waiting for the file**, and shows how much has arrived. When the whole file is there, the migration worker stages it by itself, in the name of the person who approved: the run becomes **Staged**, or **Refused** with the reason. **Migration → Stage now** asks the worker for the staging again after a failure, and the form shows the outcome when the worker has finished; **Withdraw approval** takes the approval back. An approval is refused, with the space that is missing, where the site's disk cannot hold the file.
 
 A hand-off delivered as a file is approved from the same list: click **Approve a hand-off**, choose the `handoff.json`, check the fingerprint the dialog shows against the one you were given, choose the **Publishing account** that will send the file, and click **Approve**.
 
@@ -213,7 +213,7 @@ ucm-push transfer-status "${remote[@]}"
 ucm-push send-publication "${remote[@]}" --publication "$PUBLICATION" --progress
 ```
 
-This transfers one sealed file in resumable 512 KiB chunks. The site writes them into one file beside its staged files and notes how far that file is safely on the disk; staging renames it, so the site holds the publication once and needs free space for its size only. On the receiving bench, set `RUN_ID` from the approved handoff and stage the uploaded file:
+This transfers one sealed file in resumable 512 KiB chunks. The site writes them into one file beside its staged files and notes how far that file is safely on the disk; staging renames it, so the site holds the publication once and needs free space for its size only. The staging job is given an hour, and three minutes more for each gigabyte beyond twenty. On the receiving bench, set `RUN_ID` from the approved handoff and stage the uploaded file:
 
 ```bash
 export RUN_ID="$(jq -er '.run' /srv/approved/DEMO01/handoff.json)"

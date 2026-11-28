@@ -72,12 +72,12 @@ def approve_proposed(
 
 @frappe.whitelist(methods=["POST"])
 def stage_now(run: str):
-	"""Stage the arrived file of a run from the Desk: after a staging that failed, or a refusal whose cause
-	was corrected."""
+	"""Ask from the Desk for the staging of a run's arrived file: after a staging that failed, or a refusal
+	whose cause was corrected. The migration worker stages it, and the run shows how it went."""
 	from ucm_migration_loader import operator
 
 	try:
-		return operator.stage_arrived(run)
+		return operator.request_staging(run)
 	except ValueError as failed:
 		# the loader's own refusals are sentences without data; escaped all the same, as a message is shown as HTML
 		frappe.throw(_("Staging failed: {0}").format(frappe.utils.escape_html(str(failed))))

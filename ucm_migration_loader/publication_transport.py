@@ -26,6 +26,10 @@ STAGED = "staged"
 OFFSET = "offset"
 # free space asked for beyond the file's own size: its index, and room for the site to keep working
 RESERVE = 64 * 1024 * 1024
+GIB = 1024**3
+# a staging reads the whole file and every record's key: on the development bench about half a minute a
+# gigabyte. The job is given several times that, and never less than an hour
+STAGING_SECONDS, STAGING_SECONDS_PER_GIB = 3600, 180
 
 
 def megabytes(size: int) -> str:
@@ -185,37 +189,53 @@ def upload(run: str, offset: int, data: str):
 		return arrived
 
 
+def staging_seconds(size: int) -> int:
+	"""The time a staging job is given: more for a larger file."""
+	return max(STAGING_SECONDS, STAGING_SECONDS_PER_GIB * -(-int(size) // GIB))
+
+
+def queue_staging(run: str, size: int, user: str | None = None) -> None:
+	"""Have the migration queue stage the run's arrived file: in the name of the Migration Admin who approved
+	it, or of the one who asks for it again (`user`). A staging already queued or at work is not queued twice."""
+	frappe.enqueue(
+		"ucm_migration_loader.publication_transport.stage_arrived",
+		queue=constants.QUEUE,
+		timeout=staging_seconds(size),
+		job_id=f"ucm_migration_stage::{run}",
+		deduplicate=True,
+		enqueue_after_commit=True,
+		run=run,
+		user=user,
+	)
+
+
 def _stage_when_committed(run: str) -> None:
 	"""The whole file is here: have the migration queue stage it. The approval was the decision; staging checks
 	the file against it and writes nothing into UCM."""
 	if frappe.db.get_value(constants.RUN, run, "state") != constants.AWAITING:
 		return  # approved from the bench without a run, or staged already: `receive` stages it by hand
-	frappe.enqueue(
-		"ucm_migration_loader.publication_transport.stage_arrived",
-		queue=constants.QUEUE,
-		timeout=3600,
-		job_id=f"ucm_migration_stage::{run}",
-		deduplicate=True,
-		enqueue_after_commit=True,
-		run=run,
-	)
+	queue_staging(run, json.loads((folder(run) / "approval.json").read_bytes())["size"])
 
 
-def stage_arrived(run: str) -> None:
+def stage_arrived(run: str, user: str | None = None) -> None:
 	"""Queued job: stage the file of a run that waits for it, in the name of the Migration Admin who approved
-	it. A file the site's checks refuse is kept as a refused run; any other failure is noted on the run, which
-	keeps waiting until someone stages it from the Desk."""
+	it; or, asked again from the Desk by `user`, of that Migration Admin, also for a run the site refused
+	before. A file the site's checks refuse is kept as a refused run; any other failure is noted on the run,
+	which keeps waiting until someone stages it from the Desk."""
 	record = frappe.db.get_value(constants.RUN, run, ["state", "approval_json"], as_dict=True)
 	approver = json.loads((record and record.approval_json) or "{}").get("by")
-	if not record or record.state != constants.AWAITING or not approver:
+	again = (constants.REJECTED,) if user else ()
+	if not record or record.state not in (constants.AWAITING, *again) or not (user or approver):
 		return
-	# nosemgrep: frappe-semgrep-rules.rules.security.frappe-setuser -- reviewed: the job is queued by the sender's last piece and must not run with the sender's rights or with more than the approver's; receive() checks the role again and compares the file with the approved fingerprint
-	frappe.set_user(approver)
+	# nosemgrep: frappe-semgrep-rules.rules.security.frappe-setuser -- reviewed: the job is queued by the sender's last piece, or by a Migration Admin's request, and must not run with the sender's rights or with more than the approver's or the asker's; receive() checks the role again and compares the file with the approved fingerprint
+	frappe.set_user(user or approver)
 	try:
 		receive(run)
 	except Exception as failed:
 		frappe.db.rollback()
-		if frappe.db.get_value(constants.RUN, run, "state") == constants.REJECTED:
+		if frappe.db.get_value(
+			constants.RUN, run, "state"
+		) == constants.REJECTED and "preflight failed" in str(failed):
 			return  # refused by the site's checks: the run says what differs
 		# the loader's own refusals are sentences without data; another error gives its kind only
 		reason = str(failed) if isinstance(failed, ValueError) else type(failed).__name__

@@ -195,11 +195,16 @@ async function approve_proposed(frm) {
 	dialog.show();
 }
 
-// Ask for the staging of the arrived file, and say how it went.
+// Ask for the staging of the arrived file. The worker stages it: say so, and show the outcome when it is there.
 async function stage_now(frm) {
+	const before = frm.doc.modified;
 	const result = await ask(METHOD + "stage_now", { run: frm.doc.name });
 	if (result === REFUSED) return;
 	const said = {
+		queued: [
+			__("Staging requested. This page shows the result when the worker has finished."),
+			"blue",
+		],
 		staged: [__("Staged: the file is checked, nothing is written yet."), "green"],
 		refused: [__("Refused: the run says what differs."), "red"],
 		incomplete: [__("The file has not arrived completely yet."), "orange"],
@@ -207,6 +212,16 @@ async function stage_now(frm) {
 	}[result.outcome];
 	if (said) frappe.show_alert({ message: said[0], indicator: said[1] });
 	await frm.reload_doc();
+	if (result.outcome !== "queued") return;
+	// staged, refused again or failed, the run is written: a large file takes the worker a while to check
+	const until = Date.now() + 4 * 60 * 60 * 1000;
+	clearInterval(frm.ucm_staging);
+	frm.ucm_staging = setInterval(async () => {
+		if (!showing(frm)) return clearInterval(frm.ucm_staging);
+		if (cur_dialog) return;
+		await frm.reload_doc();
+		if (frm.doc.modified !== before || Date.now() > until) clearInterval(frm.ucm_staging);
+	}, 5000);
 }
 
 // The worker opens the delegation after the request: show the result without a click, while this form stays open.

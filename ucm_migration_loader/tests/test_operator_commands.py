@@ -510,6 +510,55 @@ class TestStagingAfterArrival(OperatorCase):
 		self.assertEqual(code, 1)
 		self.assertIn(f"Refused, and kept as {record.display_id}", text)
 
+	def test_the_desk_hands_the_staging_to_the_worker(self):
+		"""A large file takes longer to check than a request may last: the Desk queues the staging, in the name
+		of the Migration Admin who asks."""
+		path, run, handoff = self.sealed(versions={"ucm": "0.0.0-not-this-site"})
+		operator.approve(handoff, self.publisher)
+		self.send(path, run)
+		with patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
+			publication_transport.stage_arrived(run)
+		self.assertEqual(self.state(run), "Rejected")
+		asking = make_account("asking-admin", operator=True)
+		frappe.set_user(asking)
+		with patch.object(frappe, "enqueue") as queued:
+			self.assertEqual(desk.stage_now(run)["outcome"], "queued")
+		job = queued.call_args
+		self.assertEqual(job.args[0], "ucm_migration_loader.publication_transport.stage_arrived")
+		self.assertEqual((job.kwargs["run"], job.kwargs["user"]), (run, asking))
+		self.assertEqual(job.kwargs["job_id"], f"ucm_migration_stage::{run}")
+		self.assertTrue(job.kwargs["deduplicate"])
+		# the site is in line by now: the worker's job stages the file the site refused before
+		frappe.set_user(self.publisher)
+		with patch.object(publication_receiver, "release_differences", return_value={}):
+			publication_transport.stage_arrived(run, user=asking)
+		self.assertEqual(frappe.session.user, asking)
+		self.assertEqual(self.state(run), "Publication staged")
+
+	def test_a_refused_run_is_not_staged_again_unasked(self):
+		path, run, handoff = self.sealed(versions={"ucm": "0.0.0-not-this-site"})
+		operator.approve(handoff, self.publisher)
+		self.send(path, run)
+		with patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
+			publication_transport.stage_arrived(run)
+		with patch.object(publication_transport, "receive") as received:
+			publication_transport.stage_arrived(run)
+		received.assert_not_called()
+
+	def test_a_larger_file_gives_the_staging_more_time(self):
+		gib = 1024**3
+		self.assertEqual(publication_transport.staging_seconds(300 * 1024 * 1024), 3600)
+		self.assertEqual(publication_transport.staging_seconds(20 * gib), 3600)
+		self.assertEqual(publication_transport.staging_seconds(60 * gib), 10800)
+		path, run, handoff = self.sealed()
+		operator.approve(handoff, self.publisher)
+		with (
+			patch.object(frappe, "enqueue") as queued,
+			patch.object(publication_transport, "STAGING_SECONDS_PER_GIB", 7200),
+		):
+			self.send(path, run)
+		self.assertEqual(queued.call_args.kwargs["timeout"], 7200)
+
 	def test_a_staging_that_fails_is_noted_on_the_waiting_run(self):
 		path, run, handoff = self.sealed()
 		operator.approve(handoff, self.publisher)
@@ -524,8 +573,12 @@ class TestStagingAfterArrival(OperatorCase):
 		record = frappe.get_doc(constants.RUN, run)
 		self.assertEqual(record.state, AWAITING)
 		self.assertEqual(record.finding, "Staging failed: Transfer differs from the approved file")
-		# asked again from the Desk, once the cause is gone
-		self.assertEqual(desk.stage_now(run)["outcome"], "staged")
+		# asked again from the Desk, once the cause is gone: the worker stages it
+		frappe.set_user(self.admin)
+		with patch.object(frappe, "enqueue") as queued:
+			self.assertEqual(desk.stage_now(run)["outcome"], "queued")
+		publication_transport.stage_arrived(**{key: queued.call_args.kwargs[key] for key in ("run", "user")})
+		self.assertEqual(self.state(run), "Publication staged")
 		self.assertIsNone(frappe.db.get_value(constants.RUN, run, "finding"))
 
 	def test_an_approver_who_lost_the_role_stages_nothing(self):

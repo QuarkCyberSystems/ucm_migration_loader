@@ -12,7 +12,7 @@ from .contract import check_code, digest, encoded
 from .frozen import FORMAT
 from .publication_receiver import context_state
 from .publication_transport import approve as bind
-from .publication_transport import folder, progress, receive
+from .publication_transport import folder, progress, queue_staging, receive
 from .ucm_migration_loader import run_overview
 
 
@@ -265,6 +265,24 @@ def run_of(handoff_or_run: str) -> str:
 def approve_handoff(handoff_path: str, publishing_user: str) -> dict:
 	"""Approve a reviewed hand-off for one publishing account, and say what was approved."""
 	return approve_sealed(handoff_path, publishing_user)
+
+
+def request_staging(run: str) -> dict:
+	"""Asked from the Desk: have the migration worker stage the arrived file of a run that waits for it, or
+	that the site refused before. The worker does it, as a file of many gigabytes takes longer to check than
+	a request may last; the run shows the outcome. A run that is staged already says so at once."""
+	runs.only_admin()
+	approval = folder(run) / "approval.json"
+	if not approval.is_file():
+		return {"outcome": "not approved", "run": run}
+	approved = json.loads(approval.read_bytes())
+	arrived = progress(folder(run), approved)
+	if arrived["offset"] != arrived["size"]:
+		return {"outcome": "incomplete", "run": run, "arrived": arrived["offset"], "bytes": arrived["size"]}
+	if frappe.db.get_value(constants.RUN, run, "state") not in (constants.AWAITING, constants.REJECTED):
+		return stage_arrived(run)
+	queue_staging(run, approved["size"], frappe.session.user)
+	return {"outcome": "queued", "run": run}
 
 
 def stage_arrived(handoff_or_run: str) -> dict:
