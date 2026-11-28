@@ -2,6 +2,7 @@
 without its file, when it does not. A file sent over HTTPS leaves its run readable by the account that sent it."""
 
 import base64
+import errno
 import hashlib
 import json
 import tempfile
@@ -285,6 +286,103 @@ class TestTransfer(StagingCase):
 		self.assertRaises(
 			frappe.PermissionError, publication_transport.upload, run, 0, base64.b64encode(data).decode()
 		)
+
+
+class TestArrival(StagingCase):
+	"""A sealed file arrives in pieces into one file, and the site notes how far it is safely on the disk."""
+
+	PIECE = 1024
+
+	def setUp(self):
+		super().setUp()
+		# pieces of a kilobyte, so that a file of the tests has several
+		self.enterContext(patch.object(publication_transport, "CHUNK", self.PIECE))
+		self.publisher = make_account("sender")
+		self.path, self.run = self.sealed()
+		self.data = open(self.path, "rb").read()
+		self.assertGreater(len(self.data), 3 * self.PIECE)
+		publication_transport.approve(
+			self.run, self.publisher, hashlib.sha256(self.data).hexdigest(), len(self.data)
+		)
+		frappe.set_user(self.publisher)
+
+	def piece(self, number: int, data: bytes | None = None) -> dict:
+		start = number * self.PIECE
+		chunk = (data or self.data)[start : start + self.PIECE]
+		return publication_transport.upload(self.run, start, base64.b64encode(chunk).decode())
+
+	def arrived(self) -> bytes:
+		return publication_receiver.arriving(self.run).read_bytes()
+
+	def test_the_pieces_make_one_file_and_no_other(self):
+		self.assertEqual(self.piece(0)["offset"], self.PIECE)
+		self.assertEqual(self.piece(1)["offset"], 2 * self.PIECE)
+		self.assertEqual(self.arrived(), self.data[: 2 * self.PIECE])
+		self.assertEqual(publication_transport.status(self.run)["offset"], 2 * self.PIECE)
+		inbox = publication_transport.folder(self.run)
+		self.assertEqual(sorted(kept.name for kept in inbox.iterdir()), ["approval.json", "offset"])
+		self.assertEqual(publication_receiver.arriving(self.run).stat().st_mode & 0o777, 0o600)
+
+	def test_a_piece_out_of_turn_is_refused(self):
+		self.piece(0)
+		self.assertRaisesRegex(ValueError, "Unexpected publication offset", self.piece, 2)
+		self.assertEqual(self.arrived(), self.data[: self.PIECE])
+
+	def test_a_piece_sent_twice_is_accepted_when_it_is_the_same(self):
+		self.piece(0)
+		self.piece(1)
+		self.assertEqual(self.piece(0)["offset"], 2 * self.PIECE)
+		self.assertRaisesRegex(ValueError, "Replayed chunk differs", self.piece, 0, bytes(len(self.data)))
+		self.assertEqual(self.arrived(), self.data[: 2 * self.PIECE])
+
+	def test_a_piece_cut_short_by_a_crash_is_sent_again(self):
+		"""What the file holds beyond the noted end was never acknowledged: the sender is told the noted end,
+		and the next piece replaces it."""
+		self.piece(0)
+		with publication_receiver.arriving(self.run).open("ab") as file:
+			file.write(b"half a piece that was never noted")
+		self.assertEqual(publication_transport.status(self.run)["offset"], self.PIECE)
+		self.piece(1)
+		self.assertEqual(self.arrived(), self.data[: 2 * self.PIECE])
+
+	def test_a_full_disk_is_said_in_a_sentence_and_the_transfer_goes_on_later(self):
+		self.piece(0)
+		full = OSError(errno.ENOSPC, "No space left on device")
+		with patch.object(publication_transport.os, "pwrite", side_effect=full):
+			self.assertRaisesRegex(ValueError, "The site's disk is full", self.piece, 1)
+		self.assertEqual(publication_transport.status(self.run)["offset"], self.PIECE)
+		self.piece(1)
+		self.assertEqual(self.arrived(), self.data[: 2 * self.PIECE])
+
+	def test_the_whole_file_is_staged_where_it_arrived(self):
+		for number in range(-(-len(self.data) // self.PIECE)):
+			arrived = self.piece(number)
+		self.assertEqual(arrived["offset"], len(self.data))
+		self.assertEqual(self.arrived(), self.data)
+		frappe.set_user("Administrator")
+		self.assertEqual(publication_transport.receive(self.run)["state"], "Publication staged")
+		self.assertFalse(publication_receiver.arriving(self.run).exists())
+		self.assertEqual(publication_receiver.local_publication(self.run).read_bytes(), self.data)
+
+	def test_a_file_that_differs_from_the_approved_one_is_not_staged(self):
+		changed = bytearray(self.data)
+		changed[self.PIECE + 5] ^= 1
+		for number in range(-(-len(self.data) // self.PIECE)):
+			self.piece(number, bytes(changed))
+		frappe.set_user("Administrator")
+		self.assertRaisesRegex(
+			ValueError, "Transfer differs from the approved file", publication_transport.receive, self.run
+		)
+		self.assertFalse(publication_receiver.local_publication(self.run).exists())
+
+	def test_a_withdrawn_approval_removes_what_arrived(self):
+		self.piece(0)
+		frappe.set_user("Administrator")
+		publication_receiver.remove_arrived(self.run)
+		self.assertTrue(publication_receiver.arriving(self.run).exists())  # not before the commit
+		frappe.db.after_commit.run()
+		self.assertFalse(publication_receiver.arriving(self.run).exists())
+		self.assertFalse(publication_transport.folder(self.run).exists())
 
 
 class TestActivatedRun(StagingCase):

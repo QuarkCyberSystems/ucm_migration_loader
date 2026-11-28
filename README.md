@@ -213,7 +213,7 @@ ucm-push transfer-status "${remote[@]}"
 ucm-push send-publication "${remote[@]}" --publication "$PUBLICATION" --progress
 ```
 
-This transfers one sealed file in resumable 512 KiB chunks. On the receiving bench, set `RUN_ID` from the approved handoff and stage the uploaded file:
+This transfers one sealed file in resumable 512 KiB chunks. The site writes them into one file beside its staged files and notes how far that file is safely on the disk; staging renames it, so the site holds the publication once and needs free space for its size only. On the receiving bench, set `RUN_ID` from the approved handoff and stage the uploaded file:
 
 ```bash
 export RUN_ID="$(jq -er '.run' /srv/approved/DEMO01/handoff.json)"

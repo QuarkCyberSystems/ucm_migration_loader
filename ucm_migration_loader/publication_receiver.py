@@ -42,8 +42,15 @@ def staged_file(run):
 	return path.resolve(strict=True)
 
 
+def arriving(run):
+	"""The run's sealed file while it arrives, piece after piece: beside the staged files, on their file system,
+	so that staging it is a rename and the site never holds a second copy."""
+	return local_publication(run).with_suffix(".arriving")
+
+
 def inbox(run):
-	"""Where the pieces of a run's sealed file arrive, with the approval they are checked against."""
+	"""What the site keeps of a run's transfer beside the arriving file: the approval the file is checked
+	against, and how far it has arrived."""
 	local_publication(run)  # the identifier is checked before any path is made from it
 	return Path(frappe.get_site_path("private", "migration-inbox", run))
 
@@ -243,12 +250,13 @@ def _refuse(run, manifest, inventory, seconds):
 	frappe.db.commit()
 
 
-def stage(path: str, run: str):
-	"""Bench operator entry point. Register only a verified private copy on this site."""
-	runs.only_admin()
-	started = monotonic()
-	dest = local_publication(run)
-	dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+@contextmanager
+def _private_copy(path: str, dest: Path, take: bool):
+	"""The file to check and stage: a private copy of a file from elsewhere, removed when it is not staged; or,
+	with `take`, the file itself where it arrived beside the staged files, which a refusal leaves there."""
+	if take:
+		yield Path(path)
+		return
 	with tempfile.TemporaryDirectory(dir=dest.parent) as work:
 		proposed = Path(work) / "publication"
 		with Path(path).open("rb") as source, proposed.open("xb") as output:
@@ -256,6 +264,18 @@ def stage(path: str, run: str):
 			shutil.copyfileobj(source, output)
 			output.flush()
 			os.fsync(output.fileno())
+		yield proposed
+
+
+def stage(path: str, run: str, *, take: bool = False):
+	"""Bench operator entry point. Register only a verified private copy on this site. `take`: the file is
+	the one that arrived in the staged files' folder, and is moved, not copied: a publication of many
+	gigabytes is on the site once."""
+	runs.only_admin()
+	started = monotonic()
+	dest = local_publication(run)
+	dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+	with _private_copy(path, dest, take) as proposed:
 		manifest = verify_publication(proposed, run)
 		if manifest["site"] != frappe.local.site:
 			raise ValueError("Publication targets another site")
@@ -287,9 +307,13 @@ def stage(path: str, run: str):
 		# a refusal the approval's dialog showed in the same words; the context is locked from here on
 		if problem := context_state(context, run)["problem"]:
 			raise ValueError(problem)
-		if dest.exists():
+		if proposed == dest:
+			pass  # staged before, by a process that died after the rename and before its commit
+		elif dest.exists():
 			# A previous process may have died after the link and before database commit.
 			verify_publication(dest, run)
+			if take:
+				proposed.unlink()
 		else:
 			os.replace(proposed, dest)
 			fd = os.open(dest.parent, os.O_RDONLY)
@@ -380,10 +404,14 @@ def remove_staged_file(run: str) -> None:
 	frappe.db.after_commit.add(lambda: publication_index.index_path(path).unlink(missing_ok=True))
 
 
-def remove_after_discard(record):
-	import shutil
+def remove_arrived(run: str) -> None:
+	"""Once the transaction is committed, remove what arrived of a run's file, with its approval: no file is
+	accepted for the run afterwards."""
+	folder, file = inbox(run), arriving(run)
+	frappe.db.after_commit.add(lambda: file.unlink(missing_ok=True))
+	frappe.db.after_commit.add(lambda: shutil.rmtree(folder, ignore_errors=True))
 
-	arrived = inbox(record.name)
+
+def remove_after_discard(record):
 	remove_staged_file(record.name)
-	# with the approval: no file is accepted for a discarded run
-	frappe.db.after_commit.add(lambda: shutil.rmtree(arrived, ignore_errors=True))
+	remove_arrived(record.name)

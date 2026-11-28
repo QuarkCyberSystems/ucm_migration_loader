@@ -4,6 +4,7 @@ of it has arrived."""
 
 import base64
 import json
+import shutil
 import tempfile
 import uuid
 from unittest.mock import patch
@@ -11,7 +12,7 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from ucm_migration_loader import api, constants, operator, publication_transport
+from ucm_migration_loader import api, constants, operator, publication_receiver, publication_transport
 from ucm_migration_loader.commands import said
 from ucm_migration_loader.tests.utils import (
 	hand_off,
@@ -447,18 +448,29 @@ class TestStagingAfterArrival(OperatorCase):
 		publication_transport.stage_arrived(run)
 		self.assertEqual(desk.stage_now(run)["outcome"], "staged")
 
-	def test_the_pieces_are_removed_once_the_file_is_staged(self):
+	def test_the_arrived_file_becomes_the_staged_one(self):
+		"""The site holds the file once: it arrives beside the staged files and is renamed when it is staged."""
 		path, run, handoff = self.sealed()
 		operator.approve(handoff, self.publisher)
 		self.send(path, run)
-		publication_transport.stage_arrived(run)
-		frappe.set_user(self.admin)
+		arrived, staged = publication_receiver.arriving(run), publication_receiver.local_publication(run)
+		self.assertEqual(arrived.parent, staged.parent)
+		self.assertTrue(arrived.is_file() and not staged.exists())
 		inbox = publication_transport.folder(run)
-		self.assertTrue(any(piece.name.isdigit() for piece in inbox.iterdir()))
-		# what the staging does once it is committed
-		publication_transport.clear_pieces(run)
 		self.assertEqual(
-			sorted(piece.name for piece in inbox.iterdir()), ["approval.json", publication_transport.STAGED]
+			sorted(kept.name for kept in inbox.iterdir()), ["approval.json", publication_transport.OFFSET]
+		)
+		same = arrived.stat().st_ino
+		with patch.object(shutil, "copyfileobj") as copied:
+			publication_transport.stage_arrived(run)
+		copied.assert_not_called()
+		self.assertTrue(staged.is_file() and not arrived.exists())
+		self.assertEqual(staged.stat().st_ino, same)
+		frappe.set_user(self.admin)
+		# what the staging does once it is committed
+		publication_transport.mark_staged(run)
+		self.assertEqual(
+			sorted(kept.name for kept in inbox.iterdir()), ["approval.json", publication_transport.STAGED]
 		)
 		# asked again, the site still says the whole file arrived, and the run is the staged one
 		frappe.set_user(self.publisher)
@@ -467,6 +479,15 @@ class TestStagingAfterArrival(OperatorCase):
 		frappe.set_user(self.admin)
 		self.assertEqual(publication_transport.receive(run)["state"], "Publication staged")
 		self.assertEqual(desk.stage_now(run)["outcome"], "staged")
+
+	def test_a_staging_that_died_after_the_rename_is_taken_up_again(self):
+		path, run, handoff = self.sealed()
+		operator.approve(handoff, self.publisher)
+		self.send(path, run)
+		publication_receiver.arriving(run).rename(publication_receiver.local_publication(run))
+		publication_transport.stage_arrived(run)
+		self.assertEqual(self.state(run), "Publication staged")
+		self.assertTrue(publication_receiver.local_publication(run).is_file())
 
 	def test_a_file_the_site_refuses_becomes_a_refused_run(self):
 		path, run, handoff = self.sealed(versions={"ucm": "0.0.0-not-this-site"})
@@ -478,8 +499,12 @@ class TestStagingAfterArrival(OperatorCase):
 		record = frappe.get_doc(constants.RUN, run)
 		self.assertEqual(record.state, "Rejected")
 		self.assertEqual(record.finding, "Preflight refused: application versions differ")
+		# the refused file stays where it arrived, to be staged again once the site is brought in line
+		self.assertTrue(publication_receiver.arriving(run).is_file())
+		self.assertFalse(publication_receiver.local_publication(run).exists())
+		frappe.set_user(self.admin)
 		with patch.object(frappe.db, "commit"), patch.object(frappe.db, "rollback"):
-			result = desk.stage_now(run)
+			result = operator.stage_arrived(run)
 		self.assertEqual(result["outcome"], "refused")
 		text, code = said(result, run)
 		self.assertEqual(code, 1)

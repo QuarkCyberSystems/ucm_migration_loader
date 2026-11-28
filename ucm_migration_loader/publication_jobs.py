@@ -72,15 +72,12 @@ def request(run, action, max_batches=None):
 def _withdraw(run):
 	"""Decline a proposed hand-off, or take back the approval of a publication whose file was not staged: what
 	arrived of it is removed, and the delegation's context is free for another publication."""
-	import shutil
-
-	from .publication_transport import folder
+	from .publication_receiver import remove_arrived
 	from .ucm_migration_loader import run_overview
 
-	inbox = folder(run)
 	frappe.db.set_value(constants.RUN, run, {"state": constants.DISCARDED, "finding": None})
 	run_overview.refresh(run)
-	frappe.db.after_commit.add(lambda: shutil.rmtree(inbox, ignore_errors=True))
+	remove_arrived(run)
 	return {"run": run, "state": constants.DISCARDED, "requested": "discard", "applied": 0}
 
 

@@ -25,7 +25,7 @@ from ucm_migration_loader.frozen import (
 	reference_digest,
 	referenced_dictionary_digest,
 )
-from ucm_migration_loader.publication_receiver import local_publication
+from ucm_migration_loader.publication_receiver import arriving, local_publication
 from ucm_migration_loader.publication_transport import folder
 
 PUBLISHED = {"Person": 100, "Activity": 300, "ToDo": 4, "Record Share": 10}
@@ -195,6 +195,7 @@ def remove_files(run: str) -> None:
 
 	path = local_publication(run)
 	path.unlink(missing_ok=True)
+	arriving(run).unlink(missing_ok=True)
 	publication_index.index_path(path).unlink(missing_ok=True)
 	shutil.rmtree(folder(run), ignore_errors=True)
 
