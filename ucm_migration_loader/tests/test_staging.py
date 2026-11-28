@@ -11,7 +11,14 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from ucm_migration_loader import api, constants, publication_receiver, publication_transport
+from ucm_migration_loader import (
+	api,
+	constants,
+	publication_index,
+	publication_receiver,
+	publication_transport,
+	publication_worker,
+)
 from ucm_migration_loader.tests.utils import (
 	hidden_context,
 	make_account,
@@ -19,7 +26,7 @@ from ucm_migration_loader.tests.utils import (
 	seal,
 	site_schema,
 )
-from ucm_migration_loader.ucm_migration_loader import run_overview
+from ucm_migration_loader.ucm_migration_loader import run_overview, set_based
 from ucm_migration_loader.ucm_migration_loader.doctype.ucm_migration_run.ucm_migration_run import overview
 
 
@@ -277,4 +284,41 @@ class TestTransfer(StagingCase):
 		self.assertRaises(frappe.PermissionError, publication_transport.status, run)
 		self.assertRaises(
 			frappe.PermissionError, publication_transport.upload, run, 0, base64.b64encode(data).decode()
+		)
+
+
+class TestActivatedRun(StagingCase):
+	"""An activated run's file leaves the site with its activation, and the run answers without it."""
+
+	def staged(self):
+		path, run = self.sealed()
+		publication_receiver.stage(path, run)
+		return path, run
+
+	def test_the_file_and_its_index_leave_once_the_activation_is_committed(self):
+		_path, run = self.staged()
+		dest = publication_receiver.local_publication(run)
+		index = publication_index.index_path(dest)
+		self.assertTrue(dest.exists() and index.exists())
+		publication_receiver.remove_staged_file(run)
+		# not before the commit: an activation that is rolled back keeps its file
+		self.assertTrue(dest.exists() and index.exists())
+		frappe.db.after_commit.run()
+		self.assertFalse(dest.exists() or index.exists())
+
+	def test_an_activated_run_answers_without_its_file(self):
+		path, run = self.staged()
+		frappe.db.set_value(constants.RUN, run, "state", constants.ACTIVATED)
+		remove_files(run)
+		self.assertEqual(publication_worker.activate(run)["state"], "Activated")
+		self.assertEqual(set_based.activate(run)["state"], "Activated")
+		# the same file, sent or staged once more, is not kept again
+		self.assertEqual(publication_receiver.stage(path, run)["state"], "Activated")
+		self.assertFalse(publication_receiver.local_publication(run).exists())
+
+	def test_a_step_that_reads_the_file_says_that_it_is_gone(self):
+		_path, run = self.staged()
+		remove_files(run)
+		self.assertRaisesRegex(
+			ValueError, "file is no longer on this site", publication_receiver.rebuild_index, run
 		)

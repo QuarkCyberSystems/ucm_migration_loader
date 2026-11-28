@@ -55,6 +55,7 @@ from ucm_migration_loader.publication_receiver import (
 	check_unchanged_site,
 	indexed_publication,
 	remove_after_discard,
+	remove_staged_file,
 )
 from ucm_migration_loader.runs import check_closed, lock_run
 
@@ -1128,6 +1129,9 @@ def activate(run: str, commit: bool = True) -> dict:
 
 	runs.only_admin()
 	started = monotonic()
+	if frappe.db.get_value(constants.RUN, run, "state") == constants.ACTIVATED:
+		# asked again, by a job that is run twice for instance: the run's file left with its activation
+		return runs.result(runs.record(run))
 	with documents.current_reads(), _publication(run) as sealed:
 		try:
 			manifest = sealed.manifest
@@ -1188,6 +1192,7 @@ def activate(run: str, commit: bool = True) -> dict:
 				"seconds": round(monotonic() - started, 2),
 			}
 			if commit:
+				remove_staged_file(run)
 				# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the go-live transaction: the access rows, the open context and the run's record commit together
 				frappe.db.commit()
 			else:

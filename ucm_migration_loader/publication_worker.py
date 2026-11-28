@@ -37,6 +37,7 @@ from .publication_receiver import (
 	check_same_target,
 	check_unchanged_site,
 	indexed_publication,
+	remove_staged_file,
 )
 from .publication_shares import check_share
 from .runs import check_closed, lock_run
@@ -747,12 +748,13 @@ def _activate(run):
 	held_shares.lock_activation()
 	ctx, record = lock_run(run)
 	refuse_set_based(record)
+	if record.state == constants.ACTIVATED:
+		# asked again, by a job that is run twice for instance: the run's file left with its activation
+		return runs.result(record)
 	with indexed_publication(run, record) as (db, hashes, manifest, path, stamp):
 		try:
 			check_unchanged_site(manifest)
 			check_same_target(manifest, ctx.name, record)
-			if record.state == constants.ACTIVATED:
-				return runs.result(record)
 			if record.state not in (constants.READY, constants.APPLYING):
 				raise ValueError("Run has no committed business batches")
 			check_closed(ctx)
@@ -815,6 +817,7 @@ def _activate(run):
 			)
 			publication_index.check_identity(path, stamp)
 			runs.mark_activated(run)
+			remove_staged_file(run)
 			result = runs.result(runs.record(run))
 			# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit -- reviewed: the activation is one transaction of the queued job, which ends here
 			frappe.db.commit()

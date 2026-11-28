@@ -33,6 +33,15 @@ def local_publication(run):
 	return Path(frappe.get_site_path("private", "migration-publications", run + ".sqlite"))
 
 
+def staged_file(run):
+	"""The run's staged file, for a step that reads it. It leaves the site when the run is activated or
+	discarded."""
+	path = local_publication(run)
+	if not path.is_file():
+		raise ValueError("The run's file is no longer on this site")
+	return path.resolve(strict=True)
+
+
 def inbox(run):
 	"""Where the pieces of a run's sealed file arrive, with the approval they are checked against."""
 	local_publication(run)  # the identifier is checked before any path is made from it
@@ -191,7 +200,8 @@ def _staged_before(run, manifest, dest):
 		raise ValueError("Existing run cannot receive this publication")
 	if record.state in (constants.REJECTED, constants.AWAITING, constants.PROPOSED):
 		return None
-	verify_publication(dest, run)
+	if record.state != constants.ACTIVATED:  # an activated run's file is gone, and nothing reads it again
+		verify_publication(dest, run)
 	return record
 
 
@@ -319,7 +329,7 @@ def stage(path: str, run: str):
 @contextmanager
 def indexed_publication(run, initial):
 	"""Open a checked receiver snapshot while the caller holds the run lock."""
-	path = local_publication(run).resolve(strict=True)
+	path = staged_file(run)
 	stamp = json.loads(initial.publication_stamp or "null")
 	if stamp:
 		publication_index.check_identity(path, stamp)
@@ -348,7 +358,7 @@ def rebuild_index(run: str):
 	from .runs import lock_run
 
 	_, record = lock_run(run)
-	path = local_publication(run).resolve(strict=True)
+	path = staged_file(run)
 	original = publication_index.identity(path)
 	with open_sealed(path, immutable=True) as db:
 		manifest = verify_connection(db, run)
@@ -361,11 +371,19 @@ def rebuild_index(run: str):
 	return {"run": run, "verified_batches": manifest["batches"]}
 
 
+def remove_staged_file(run: str) -> None:
+	"""Once the transaction is committed, remove the run's staged file and its index: a copy of the delegation
+	the site no longer needs. An activated run has kept what it reads later (the shares it holds), and its
+	approval stays, so that the publishing side still learns its file arrived."""
+	path = local_publication(run)
+	frappe.db.after_commit.add(lambda: path.unlink(missing_ok=True))
+	frappe.db.after_commit.add(lambda: publication_index.index_path(path).unlink(missing_ok=True))
+
+
 def remove_after_discard(record):
 	import shutil
 
-	path, arrived = local_publication(record.name), inbox(record.name)
-	frappe.db.after_commit.add(lambda: path.unlink(missing_ok=True))
-	frappe.db.after_commit.add(lambda: publication_index.index_path(path).unlink(missing_ok=True))
+	arrived = inbox(record.name)
+	remove_staged_file(record.name)
 	# with the approval: no file is accepted for a discarded run
 	frappe.db.after_commit.add(lambda: shutil.rmtree(arrived, ignore_errors=True))
