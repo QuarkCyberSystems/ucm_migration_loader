@@ -194,6 +194,8 @@ ucm-push check-publication --site "$TARGET_SITE" --publication "$PUBLICATION" \
 jq '{run,site,snapshot,batches,counts,file_bytes,file_sha256}' handoff.json
 ```
 
+`prepare` and `seal` refuse a delegation the site could not load, before they write a file: activities that lack a required place, business rows outside the publication profile, and persons whose files are not their picture alone. A publication carries a person's picture, as one private file, and no other attachment. The refusal gives the number of files and persons and the first person's identifier, and `source-inventory` lists the same under `unsupported_person_files`, so that the source is corrected before anything is sent. The site checks the same when it loads a person.
+
 A batch holds up to 1,000 parent documents and 4 MiB, which is also the default of both ways of sealing. The first limit reached closes the batch. Child rows belong to their parent. The planner orders activities by dependency. A 1,000-person batch can produce one multi-row Person SQL statement when the records fit and have no dependencies requiring an earlier flush. Private picture bytes are sealed with their metadata. Supply `--ucm-version` to `prepare` if the publishing database lacks installed UCM version metadata.
 
 ### 3. Approve, transfer and stage

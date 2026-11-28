@@ -18,6 +18,79 @@ SETUP_TABLES = frozenset(
 )
 
 
+# a person's file is its picture where the person names it and the file is attached as that field
+PICTURE = """p.person_picture is not null and p.person_picture != ''
+	and f.attached_to_field = 'person_picture' and f.file_url = p.person_picture"""
+
+
+# a person's key as a file names it. Where the key is kept as a UUID, as UCM keeps it, comparing it with the
+# file's text column as it is would read every file of the database for each query; as text, the files of
+# each person are found by their index
+PERSON = "cast(p.name as char)"
+
+
+def person_files(cur, context) -> dict:
+	"""What a delegation's persons have attached that a publication cannot carry. It carries a person's
+	picture, as one private file, and no other attachment: the site would refuse the person when it is loaded,
+	after the whole file was sealed, sent and staged. Each finding has its count and the first person, by
+	identifier, for the publishing team to look at."""
+	found = {}
+	cur.execute(
+		f"""select count(*), count(distinct f.attached_to_name), min(f.attached_to_name)
+		from tabPerson p straight_join tabFile f
+			on f.attached_to_doctype = 'Person' and f.attached_to_name = {PERSON}
+		where p.context_tech_id = %s and not ({PICTURE})""",
+		(context,),
+	)
+	files, persons, first = cur.fetchone()
+	if files:
+		found["other_attachments"] = {"files": files, "persons": persons, "first_person": first}
+	cur.execute(
+		f"""select count(*), min(name) from (
+			select p.name, (
+				select count(*) from tabFile f
+				where f.attached_to_doctype = 'Person' and f.attached_to_name = {PERSON} and {PICTURE}
+					and f.is_private = 1 and f.file_url like '/private/files/%%'
+			) files
+			from tabPerson p
+			where p.context_tech_id = %s and p.person_picture is not null and p.person_picture != ''
+		) pictures where files != 1""",
+		(context,),
+	)
+	persons, first = cur.fetchone()
+	if persons:
+		found["pictures_without_one_private_file"] = {"persons": persons, "first_person": first}
+	return found
+
+
+def files_refusal(found: dict) -> str | None:
+	"""The sentence that refuses to seal a delegation for what its persons have attached."""
+
+	def counted(n: int, one: str, many: str) -> str:
+		return f"{n:,} {one if n == 1 else many}"
+
+	said = []
+	if other := found.get("other_attachments"):
+		said.append(
+			f"{counted(other['files'], 'file is', 'files are')} attached to "
+			f"{counted(other['persons'], 'person', 'persons')} beside the person's picture "
+			f"(first person: {other['first_person']})"
+		)
+	if pictures := found.get("pictures_without_one_private_file"):
+		said.append(
+			f"the picture of {counted(pictures['persons'], 'person', 'persons')} is not held as one private "
+			f"file (first person: {pictures['first_person']})"
+		)
+	if not said:
+		return None
+	return (
+		"; ".join(said)[:1].upper()
+		+ "; ".join(said)[1:]
+		+ ". A publication carries a person's picture, as one private file, and no other attachment: "
+		"correct this in the publishing database, then seal again"
+	)
+
+
 def inventory(source, context):
 	from .frozen import CHILDREN, OWNERS, TABLES
 
@@ -99,4 +172,5 @@ def inventory(source, context):
 			"context_code": delegation[0],
 			"rows_with_context_column": counts,
 			"unsupported_business_rows": gaps,
+			"unsupported_person_files": person_files(cur, context),
 		}

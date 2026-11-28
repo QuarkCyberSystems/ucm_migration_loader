@@ -362,9 +362,13 @@ def freeze(
 				write_place_findings(cur, findings_out, site, snapshot, context)
 			subject = "activity lacks" if missing == 1 else "activities lack"
 			raise ValueError(f"{missing} {subject} a required place")
-	from .source_inventory import inventory
+	from .source_inventory import files_refusal, inventory
 
-	if gaps := inventory(source, context)["unsupported_business_rows"]:
+	held = inventory(source, context)
+	# before any row is read: the site would refuse such a person at its load, after the transfer
+	if refusal := files_refusal(held.get("unsupported_person_files") or {}):
+		raise ValueError(refusal)
+	if gaps := held["unsupported_business_rows"]:
 		raise ValueError(
 			f"Delegation contains business rows outside the publication profile: {json.dumps(gaps, sort_keys=True)}"
 		)

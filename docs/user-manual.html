@@ -208,7 +208,7 @@ quality_config = "/srv/migration/quality-db.json"</code></pre>
 Next: propose it to the site, and send it once the migration team has approved:
   ucm-push propose DEMO01-2026-11-27
   ucm-push send DEMO01-2026-11-27</code></pre>
-<p>If the delegation cannot be sealed, the command says why in a sentence, for example that activities lack a place their type requires, and leaves what it found in the folder. Nothing was sent. Have the source corrected and seal again: every attempt gets a snapshot name of its own.</p>
+<p>If the delegation cannot be sealed, the command says why in a sentence, for example that activities lack a place their type requires, or that persons have files attached beside their picture, and leaves what it found in the folder. Nothing was sent. Have the source corrected and seal again: every attempt gets a snapshot name of its own.</p>
 <h3>4. Propose the hand-off</h3>
 <p>The hand-off is the small file <code>handoff.json</code> in the snapshot's folder: the delegation, its row counts, and the size and fingerprint of the sealed file. Proposing sends it to the site, where it appears to the migration team as a run to approve. The sealed file stays with you until they have approved.</p>
 <pre><code>ucm-push propose DEMO01-2026-11-27</code></pre>
@@ -369,6 +369,7 @@ Run f1f73460c949…: Staged: checked, nothing written yet.</code></pre>
 <tr><th scope="row">The transfer stopped</th><td>Run <code>ucm-push send</code> again: it continues where it stopped. <code>ucm-push sent</code> shows how far it got.</td></tr>
 <tr><th scope="row"><strong>Stage now</strong> answers that the file has not arrived completely</th><td>The publishing operator sends again. The file is staged by itself when it is whole.</td></tr>
 <tr><th scope="row"><code>seal</code> answers that the delegation was not sealed</th><td>The reason is in the answer and in the snapshot's folder. Have the source corrected, and seal again.</td></tr>
+<tr><th scope="row"><code>seal</code> answers that files are attached to persons <em>beside the person's picture</em>, or that a picture <em>is not held as one private file</em></th><td>A publication carries a person's picture and no other attachment. The answer gives the number of files and persons, and the first person's identifier; <code>inventory.json</code> in the snapshot's folder holds the same. Have the other files detached or removed in the publishing database, and each picture held as one private file, then seal again.</td></tr>
 <tr><th scope="row">Configure write routes is missing</th><td>The route can be chosen on a staged run only, before its first load.</td></tr>
 <tr><th scope="row"><code>ucm-push</code> answers HTTP 403</th><td>The account did not send this run, or the run does not exist on that site. Check the run's identifier, the site and the token.</td></tr>
 </tbody></table>
