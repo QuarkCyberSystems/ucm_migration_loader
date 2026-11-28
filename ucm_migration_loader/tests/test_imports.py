@@ -36,7 +36,7 @@ class TestImports(IntegrationTestCase):
 				".__init__"
 			)
 			for path in root.rglob("*.py")
-			if "tests" not in path.parts and not path.name.startswith("test_") and "patches" not in path.parts
+			if "tests" not in path.parts and not path.name.startswith("test_")
 		)
 		self.assertGreater(len(modules), 30)
 		done = subprocess.run(
