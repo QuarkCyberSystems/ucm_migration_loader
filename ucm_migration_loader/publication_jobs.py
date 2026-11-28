@@ -16,6 +16,20 @@ BATCHES_PER_JOB = 25
 JOB_SECONDS = 120
 
 
+# An activation is one transaction. A job that its time limit cuts off loses all of it, and asked again it would be
+# cut off again: the delegation could never be opened. On the document routes the activation reads every record
+# once more, about 150 seconds for 100,000 rows on the development bench; its job is given four times that, and
+# never less than the hour of a set-based step.
+ACTIVATION_SECONDS_PER_100K_ROWS = 600
+
+
+def activation_seconds(rows: int) -> int:
+	"""The time an activation's job is given: more for a delegation of more rows."""
+	from .ucm_migration_loader.set_based import JOB_TIMEOUT
+
+	return max(JOB_TIMEOUT, ACTIVATION_SECONDS_PER_100K_ROWS * -(-int(rows or 0) // 100_000))
+
+
 def set_based(run):
 	"""Whether the run's plan is the set-based route, whose steps the queue runs in place of the batches."""
 	plan = frappe.db.get_value(constants.RUN, run, "write_plan_json")
@@ -101,7 +115,9 @@ def _withdraw(run):
 
 def enqueue(run, action, ticket, max_batches, stop_at):
 	timeout = None
-	if set_based(run) or action == "discard":
+	if action == "activate":
+		timeout = activation_seconds(frappe.db.get_value(constants.RUN, run, "document_count"))
+	elif set_based(run) or action == "discard":
 		# a set-based step works on a whole delegation at once, and is given the time for it; the rows of every
 		# route are discarded in sets
 		from .ucm_migration_loader.set_based import JOB_TIMEOUT as timeout

@@ -267,6 +267,35 @@ class TestFailedJob(IntegrationTestCase):
 			self.assertEqual(column(run, "finding"), f"apply after committed batch 0: {shown}")
 
 
+class TestJobTime(IntegrationTestCase):
+	"""An activation is one transaction: its job is given the time a delegation of its size takes."""
+
+	def queued(self, run, action):
+		with patch.object(frappe, "enqueue") as queued:
+			publication_jobs.enqueue(run, action, 1, 1, 1)
+		return queued.call_args.kwargs["timeout"]
+
+	def test_an_activation_is_given_more_time_for_more_rows(self):
+		self.assertEqual(publication_jobs.activation_seconds(0), 3600)
+		self.assertEqual(publication_jobs.activation_seconds(242_856), 3600)
+		self.assertEqual(publication_jobs.activation_seconds(600_001), 4200)
+		self.assertEqual(publication_jobs.activation_seconds(1_250_000), 7800)
+
+	def test_an_activation_on_the_document_route_no_longer_has_the_queue_s_five_minutes(self):
+		run = make_run(route="Document API").name
+		self.assertEqual(self.queued(run, "activate"), 3600)
+		frappe.db.set_value(constants.RUN, run, "document_count", 1_250_000)
+		self.assertEqual(self.queued(run, "activate"), 7800)
+		# a load works in jobs of two minutes that follow one another, within the queue's own limit
+		self.assertIsNone(self.queued(run, "apply"))
+		self.assertEqual(self.queued(run, "discard"), 3600)
+
+	def test_a_set_based_activation_is_given_the_same(self):
+		run = make_run(route="Set-based SQL", document_count=1_250_000).name
+		self.assertEqual(self.queued(run, "activate"), 7800)
+		self.assertEqual(self.queued(run, "apply"), 3600)
+
+
 class TestRouteOfABenchLoad(IntegrationTestCase):
 	"""The set-based steps can be called from the bench: the run then carries the route as one chosen in Desk."""
 
