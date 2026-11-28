@@ -1,0 +1,67 @@
+# A release is the reviewed pull request that merges a hotfix branch into its
+# release branch and sets __version__ in ucm_migration_loader/__init__.py (CONTRIBUTING.md).
+# On that pull request, this checks the version is the next patch of the line.
+# After the merge, it tags the merge commit v<version> and publishes a GitHub
+# release with notes generated from the pull requests since the last tag.
+#
+# Nothing is pushed to a branch: the version arrives through the pull request,
+# so GITHUB_TOKEN is enough and no ruleset is bypassed.
+name: Release
+
+on:
+  pull_request:
+    branches:
+      - 'version-*'
+      - '!version-*-hotfix'
+  push:
+    branches:
+      - 'version-*'
+      - '!version-*-hotfix'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  version:
+    name: Release version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the version
+        id: version
+        env:
+          BRANCH: ${{ github.base_ref || github.ref_name }}
+        run: |
+          version=$(.github/scripts/release-version.sh "${BRANCH}" ucm_migration_loader/__init__.py)
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+  release:
+    name: Publish the release
+    needs: version
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Tag and publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: v${{ needs.version.outputs.version }}
+        run: |
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            echo "${TAG} is already released"
+            exit 0
+          fi
+          gh release create "${TAG}" --target "${GITHUB_SHA}" --title "${TAG}" --generate-notes

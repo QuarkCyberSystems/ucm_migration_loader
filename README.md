@@ -434,7 +434,7 @@ Three kinds, each run where it fits. Synthetic data only.
 
 The fingerprint follows a hook and the functions it calls directly, not what those call in turn.
 
-`.github/workflows/ci.yml` runs the unit tests and, on MariaDB 11.8 and Frappe version-16, the integration tests. The integration tests need ucm, whose repository is private: set the repository secret `UCM_CLONE_URL` to a clone URL that can read it, or that job is skipped with a warning. `.github/workflows/linters.yml` runs the commit-title check, pre-commit (ruff, prettier, eslint), Frappe's Semgrep rules and pip-audit on every pull request. Run `pre-commit run --all-files` before committing.
+`.github/workflows/ci.yml` runs the unit tests and, on MariaDB 11.8 and Frappe version-16, the integration tests. The integration tests need ucm, whose repository is private: set the repository secret `UCM_CLONE_URL` to a clone URL that can read it, or that job is skipped with a warning. `.github/workflows/linter.yml` runs the commit-title check, pre-commit (ruff, prettier, eslint), Frappe's Semgrep rules and pip-audit on every pull request, and `.github/workflows/betterleaks.yml` scans its commits for secrets. Run `pre-commit run --all-files` before committing. [CONTRIBUTING.md](CONTRIBUTING.md) has the branches, the rules for the code and the releases; [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
 ## Operating larger publications
 

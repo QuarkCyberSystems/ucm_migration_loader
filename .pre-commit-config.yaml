@@ -1,10 +1,21 @@
-# dist/ holds a patch for Frappe: no hook rewrites it
-exclude: 'node_modules|.git|^dist/'
+exclude: 'node_modules|.git'
 default_stages: [pre-commit]
 fail_fast: false
 
 
 repos:
+  # betterleaks is the binary the dev container installs, not an upstream hook,
+  # which would build a Go toolchain on the first commit. CI has no such binary,
+  # so linter.yml skips this hook and betterleaks.yml runs the same scan.
+  - repo: local
+    hooks:
+      - id: betterleaks
+        name: betterleaks
+        entry: betterleaks git --pre-commit --staged --redact --verbose
+        language: system
+        pass_filenames: false
+        always_run: true
+
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:

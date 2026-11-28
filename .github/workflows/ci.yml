@@ -18,7 +18,7 @@ concurrency:
 permissions:
   contents: read
 
-# Every action is pinned to a commit and bench to a release, as in linters.yml.
+# Every action is pinned to a commit and bench to a release, as in linter.yml.
 env:
   FRAPPE_BENCH_VERSION: 5.31.0
   # The Frappe major this branch supports, as pyproject.toml declares it.
