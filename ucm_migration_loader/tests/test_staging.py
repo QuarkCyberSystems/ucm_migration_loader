@@ -380,6 +380,7 @@ class TestArrival(StagingCase):
 	def test_a_withdrawn_approval_removes_what_arrived(self):
 		self.piece(0)
 		frappe.set_user("Administrator")
+		frappe.db.after_commit.reset()  # what earlier tests of the class left for a commit that never came
 		publication_receiver.remove_arrived(self.run)
 		self.assertTrue(publication_receiver.arriving(self.run).exists())  # not before the commit
 		frappe.db.after_commit.run()
@@ -430,6 +431,7 @@ class TestActivatedRun(StagingCase):
 		dest = publication_receiver.local_publication(run)
 		index = publication_index.index_path(dest)
 		self.assertTrue(dest.exists() and index.exists())
+		frappe.db.after_commit.reset()  # what earlier tests of the class left for a commit that never came
 		publication_receiver.remove_staged_file(run)
 		# not before the commit: an activation that is rolled back keeps its file
 		self.assertTrue(dest.exists() and index.exists())
