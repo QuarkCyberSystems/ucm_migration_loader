@@ -4,5 +4,5 @@ from ucm_migration_loader.display_ids import receipt_id
 
 
 class UCMMigrationHeldShare(Document):
-    def before_insert(self):
-        self.display_id = receipt_id(self.migration_run, self.sequence_number, self.item_number)
+	def before_insert(self):
+		self.display_id = receipt_id(self.migration_run, self.sequence_number, self.item_number)

@@ -1,0 +1,7 @@
+{
+	"host": "quality-db.example.org",
+	"port": 3306,
+	"user": "migration_metrics",
+	"password": "<password of the metrics account>",
+	"database": "data_quality"
+}

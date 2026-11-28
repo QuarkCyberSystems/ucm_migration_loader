@@ -1,8 +1,8 @@
 {
- "doctype": "DocType",
- "name": "UCM Migration Held Share",
- "module": "UCM Migration Loader",
+ "actions": [],
  "autoname": "hash",
+ "creation": "2026-11-26 18:23:04.916492",
+ "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "display_id",
@@ -13,84 +13,106 @@
   "item_number",
   "state",
   "finding",
-  "release_run"
+  "release_run",
+  "share_json"
  ],
  "fields": [
   {
    "fieldname": "display_id",
-   "label": "Share ID",
    "fieldtype": "Data",
+   "label": "Share ID",
+   "no_copy": 1,
    "read_only": 1,
-   "unique": 1,
-   "no_copy": 1
+   "unique": 1
   },
   {
    "fieldname": "migration_run",
-   "label": "Source Migration Run",
    "fieldtype": "Link",
-   "read_only": 1,
+   "in_list_view": 1,
+   "label": "Source Migration Run",
    "options": "UCM Migration Run",
-   "search_index": 1,
-   "in_list_view": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "owner_context",
-   "label": "Owning Delegation",
    "fieldtype": "Data",
+   "label": "Owning Delegation",
    "read_only": 1
   },
   {
    "fieldname": "receiver_context",
-   "label": "Receiving Delegation",
    "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Receiving Delegation",
    "read_only": 1,
-   "search_index": 1,
-   "in_list_view": 1
+   "search_index": 1
   },
   {
    "fieldname": "sequence_number",
-   "label": "Source Batch",
    "fieldtype": "Int",
+   "label": "Source Batch",
    "read_only": 1
   },
   {
    "fieldname": "item_number",
-   "label": "Item in Batch",
    "fieldtype": "Int",
+   "label": "Item in Batch",
    "read_only": 1
   },
   {
    "fieldname": "state",
-   "label": "State",
    "fieldtype": "Select",
-   "read_only": 1,
+   "in_list_view": 1,
+   "label": "State",
    "options": "Held\nReleased\nReview",
-   "search_index": 1,
-   "in_list_view": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "finding",
-   "label": "Finding",
    "fieldtype": "Small Text",
+   "label": "Finding",
    "read_only": 1
   },
   {
    "fieldname": "release_run",
-   "label": "Receiving Migration Run",
    "fieldtype": "Link",
-   "read_only": 1,
-   "options": "UCM Migration Run"
+   "label": "Receiving Migration Run",
+   "options": "UCM Migration Run",
+   "read_only": 1
+  },
+  {
+   "description": "The published share and the references it names, kept for its release. No role reads this level.",
+   "fieldname": "share_json",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Share",
+   "permlevel": 1,
+   "read_only": 1
   }
  ],
+ "links": [],
+ "modified": "2026-11-28 06:17:00.664343",
+ "modified_by": "Administrator",
+ "module": "UCM Migration Loader",
+ "name": "UCM Migration Held Share",
+ "owner": "Administrator",
  "permissions": [
   {
-   "role": "System Manager",
-   "read": 1
+   "read": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "role": "Migration Admin"
   }
  ],
- "creation": "2026-11-18 00:00:00",
- "modified": "2026-11-20 08:10:00",
- "title_field": "display_id",
+ "row_format": "Dynamic",
+ "search_fields": "display_id",
  "show_title_field_in_link": 1,
- "search_fields": "display_id"
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "display_id"
 }

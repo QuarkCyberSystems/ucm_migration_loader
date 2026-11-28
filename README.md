@@ -1,21 +1,57 @@
 # UCM Migration Loader
 
-Migrate one delegation from a published MariaDB snapshot into a shared UCM site. The publishing team runs **`ucm-push`**. The receiving team runs the **UCM Migration Loader** Frappe app, reviews the import in Desk and decides when to open the delegation.
+Moves one delegation at a time from a publishing database into a shared UCM site. The delegation travels as one sealed file. It is loaded into a context that stays locked and hidden, checked there against the file, and opened to its users only when the migration team decides so.
 
-| Where | Component | Access it needs |
+## How a delegation moves
+
+Two people do it, each from where they work; a third prepares the site once. The site connects to nothing on the publishing side: every exchange starts from the publishing host.
+
+| Who | Works in | With |
 |---|---|---|
-| Publishing host | Python CLI | Read-only MariaDB access to the final UCM-shaped publication, read access to published private files, and an HTTPS publishing credential |
-| Receiving site | Frappe app and migration worker | The site's existing database and private file storage. A System Manager approves transfers and controls apply, pause, discard and activation |
-| Desk | UCM Migration Run, UCM Migration Batch, UCM Migration Held Share | Operators review progress, write routes, committed batches, reconciliation and historical shares |
+| Publishing operator | A terminal on the publishing host | The `ucm-push` command |
+| Migration team | The UCM Desk | The **Migration Admin** role |
+| Site administrator | The UCM server, once | The app, its worker and the two roles |
 
-[Install](#install) · [Prepare and send a delegation](#prepare-and-send-a-delegation) · [Operate the run in Desk](#operate-the-run-in-desk) · [All CLI commands](#all-cli-commands) · [Recovery](#recovery)
+| Step | Who | How |
+|---|---|---|
+| 1. Seal | Publishing operator | `ucm-push seal DEMO01` writes the delegation into one file, with a fingerprint. A delegation the site could not load is refused here, in a sentence |
+| 2. Propose | Publishing operator | `ucm-push propose` sends the site a summary of the file, never the file, and prints a check code |
+| 3. Approve | Migration team | In the Desk, open the proposed run, click **Approve hand-off** and type the check code the operator told them |
+| 4. Send | Publishing operator | `ucm-push send` transfers the file in pieces over HTTPS; a transfer that is interrupted goes on where it stopped. The site compares the file with the approved fingerprint and stages it by itself |
+| 5. Load | Migration team | **Migration → Configure write routes**, then **Apply hidden batches**. The records are written out of sight and compared with the file |
+| 6. Review | Migration team | The run's form shows its steps, the rows on both sides and any finding |
+| 7. Hand over | Publishing operator | `ucm-push quality` collects the run's metrics for the data quality database |
+| 8. Decide | Migration team | **Activate delegation** opens the delegation to its users; **Discard run** removes every record of it. Either way the site deletes its copy of the file |
+
+![A verified run waiting for the go-live decision: its steps with their times, the run's facts and the rows on both sides](docs/images/user-guide/run-ready.png)
+
+Until activation nothing is visible: a delegation that is loading, paused or verified is hidden from every UCM user. Activation is the only step that cannot be taken back.
+
+**The [user manual](docs/user-manual.md) takes each of the three through their part, step by step, with a picture of every screen.**
+
+## Documentation
+
+| Page | For | Holds |
+|---|---|---|
+| [User manual](docs/user-manual.md) | The publishing operator, the migration team, the site administrator | Every step with its screen; what the site must hold; preparing the site; what to do when something goes wrong. The same manual in one file, to read without the repository: [docs/user-manual.html](docs/user-manual.html) |
+| [Limits and edge cases](docs/limits-and-edge-cases.md) | Whoever plans a migration | What the loader refuses, holds back or leaves out, and at which step each case is found |
+| [Technical reference](docs/reference.md) | Whoever runs and maintains the loader | Every `ucm-push` command, the run's form and states, the data quality metrics, recovery, the set-based route and its measurements, larger publications |
+| [For scripts](docs/detailed-commands.md) | Automation | The detailed commands that take every value as an option, and the bench's commands for a site without a browser |
+| [Development and tests](docs/development.md) | Contributors | The three kinds of tests, the rehearsals, and what to do when UCM changes a rule |
+
+## Requirements
+
+- **Publishing host:** Python 3.11 or newer; an account that only reads the publishing database, whose UCM tables are those of the site, column for column; the private files of the published persons' pictures; HTTPS access to the site; the API key of a publishing account on the site.
+- **Receiving site:** Frappe version 16 as released, with UCM installed; a worker for the loader's own queue; an HTTPS address; room on the disk for one sealed file per delegation in flight.
 
 ## Install
 
-**Publishing host.** Use Python 3.11 or newer. Install from an authorized checkout of this repository. The CLI works independently of Bench. The source database must already contain the mapped UCM tables with matching DDL.
+In the commands below, `https://github.com/ORGANISATION/REPOSITORY.git` stands for the address of your organisation's repository of the loader; you need read access to it. Whatever the repository is called, the app, and its folder in a bench, is `ucm_migration_loader`.
+
+**Publishing host.** Use Python 3.11 or newer. The CLI works independently of Bench. The source database must already contain the mapped UCM tables with matching DDL.
 
 ```sh
-git clone https://github.com/QuarkCyberSystems/ucm_migration_loader.git
+git clone https://github.com/ORGANISATION/REPOSITORY.git ucm_migration_loader
 cd ucm_migration_loader
 python3 -m venv .venv
 . .venv/bin/activate
@@ -23,13 +59,29 @@ python -m pip install .
 ucm-push --help
 ```
 
-**Receiving host.** In a Frappe bench with UCM installed on the target site, install the app and sync its DocTypes. The full-publication cleanup implementation uses a Frappe 16.52.0 change. Review the [framework patch](dist/frappe-16.52.0-migration-cleanup.patch) and the [cleanup dependency](REHEARSALS.md#operating-and-cancelling-a-sealed-publication) before enabling discard on a new bench.
+To take a newer version later, from that folder:
+
+```sh
+git pull
+. .venv/bin/activate
+python -m pip install .
+```
+
+**Receiving host.** In a Frappe bench with UCM installed on the target site, install the app and sync its DocTypes. The app runs on Frappe as released: it needs no change to the framework.
 
 ```sh
 export TARGET_SITE=ucm.example.org
-bench get-app https://github.com/QuarkCyberSystems/ucm_migration_loader.git
+bench get-app ucm_migration_loader https://github.com/ORGANISATION/REPOSITORY.git
 bench --site "$TARGET_SITE" install-app ucm_migration_loader
 bench --site "$TARGET_SITE" migrate
+```
+
+To take a newer version later, pull it, migrate, and restart every process of the bench, the workers included: a worker keeps the code it started with.
+
+```sh
+git -C apps/ucm_migration_loader pull
+bench --site "$TARGET_SITE" migrate
+bench restart        # or restart the bench's processes as this environment runs them
 ```
 
 Register the queue under the existing `workers` object in the bench's `sites/common_site_config.json`. Merge the following entry with any existing queues. Start the worker under the bench process manager used for this environment. For a foreground run:
@@ -42,155 +94,52 @@ Register the queue under the existing `workers` object in the bench's `sites/com
 bench worker --queue ucm_migration
 ```
 
-## Prepare and send a delegation
+The two roles, the publishing account and the checks of the address and the disk are in the user manual: [Prepare the site](docs/user-manual.md#prepare-the-site).
 
-The following example uses Bash, `jq`, and a synthetic context UUID. Replace the example host, UUID, paths and accounts with the values for the delegation. Use a new private working directory for each snapshot.
+## Configuration
 
-### 1. Prepare the receiving context
+**On the publishing host,** `ucm-push init /srv/migration` writes three files to fill in, readable by the operator's account only: the settings and two database connections. The [samples](samples/) folder shows them with every key explained.
 
-Create an empty **Context** with the same UUID and code as the published delegation. Set **Context Status** to **Locked** and **Context Discoverability** to **Hidden**. For example, on the receiving bench:
-
-```sh
-bench --site "$TARGET_SITE" console
+```toml
+site = "ucm.example.org"                                    # the receiving site, as its bench names it
+url = "https://ucm.example.org"                             # its HTTPS address
+source_config = "/srv/migration/credentials/source.json"    # read-only database connection (PyMySQL)
+private_files = "/srv/publication/private/files"            # the pictures of the published persons
+publications = "/srv/migration/publications"                # a folder per snapshot is made here
+token_file = "/srv/migration/credentials/ucm-token"         # key:secret of the publishing account, mode 600
+quality_config = "/etc/ucm-migration/quality-db.json"       # optional: the data quality database
 ```
-
-```python
-context_id = "b9d729a1-eeb8-45f5-93b7-12ca51bc447b"
-ctx = frappe.get_doc({
-    "doctype": "Context",
-    "context_code": "DEMO01",
-    "context_name": "Synthetic delegation",
-    "context_status": "Locked",
-    "context_discoverability": "Hidden",
-}).insert(set_name=context_id)
-assert ctx.name == context_id
-frappe.db.commit()
-```
-
-Provision UCM's shared dictionaries, referenced catalogs, historical users, sensitive-field policy, context exemptions and intended access grants. UCM document sharing must be disabled in System Settings. For the first delegation these prerequisites may need initial setup. For later delegations, prepare the incoming context while existing contexts remain active.
-
-### 2. Inspect and prepare the publication on the publishing host
-
-`source.json` contains PyMySQL connection arguments for a read-only account. Store the actual credential outside the repo in a private file. A local MariaDB publisher can use `unix_socket` in place of the host and port.
 
 ```json
-{"host":"publisher.example.org","port":3306,"database":"ucm_publication","user":"migration_reader","password":"<read-only database password>"}
+{
+	"host": "publisher-db.example.org",
+	"port": 3306,
+	"user": "migration_reader",
+	"password": "<password of the read-only account>",
+	"database": "ucm_publication"
+}
 ```
 
-```bash
-umask 077
-export TARGET_SITE=ucm.example.org
-export UCM_URL=https://ucm.example.org
-export CONTEXT_ID=b9d729a1-eeb8-45f5-93b7-12ca51bc447b
-export SNAPSHOT=DEMO01-publication-01
-export PUBLISH_DB_CONFIG=/srv/migration/credentials/source.json
-export PRIVATE_FILES=/srv/publication/private/files
-mkdir -p "$HOME/ucm-publications/$SNAPSHOT"
-cd "$HOME/ucm-publications/$SNAPSHOT"
-export PUBLICATION="$PWD/delegation.sqlite"
+**On the site,** set with `bench --site <site> set-config`; a running site reads a changed setting within a minute. All are optional.
 
-src=(--site "$TARGET_SITE" --context "$CONTEXT_ID" --snapshot "$SNAPSHOT" --source-config "$PUBLISH_DB_CONFIG")
-ucm-push source-inventory "${src[@]}" > inventory.json
-ucm-push upload-order "${src[@]}" --batch-size 1000 > activity-order.json
-ucm-push prepare "${src[@]}" --private-files "$PRIVATE_FILES" \
-  --publication-out "$PUBLICATION" --findings-out "$PWD/findings.jsonl" \
-  --batch-size 1000 --batch-bytes 4194304 > prepared.json
-export RUN_ID="$(jq -er '.run' prepared.json)"
-ucm-push check-publication --site "$TARGET_SITE" --publication "$PUBLICATION" \
-  --run "$RUN_ID" > handoff.json
-jq '{run,site,snapshot,batches,counts,file_bytes,file_sha256}' handoff.json
-```
-
-The default is 100 parent documents and 256 KiB per batch. Full publications allow up to 1,000 parent documents and 4 MiB per batch. The first limit reached closes the batch. Child rows belong to their parent. The planner orders activities by dependency. A 1,000-person batch can produce one multi-row Person SQL statement when the records fit and have no dependencies requiring an earlier flush. Private picture bytes are sealed with their metadata. Supply `--ucm-version` to `prepare` if the publishing database lacks installed UCM version metadata.
-
-### 3. Approve, transfer and stage
-
-Deliver the independently reviewed `handoff.json` to the receiving operator. On the receiving bench, bind its digest and byte count to an enabled publishing account:
-
-```bash
-bench --site "$TARGET_SITE" execute ucm_migration_loader.operator.approve_sealed \
-  --kwargs '{"handoff_path":"/srv/approved/DEMO01/handoff.json","publishing_user":"publisher@example.org"}'
-```
-
-On the publishing host, load the publisher's Frappe API key and secret from your credential store as `UCM_MIGRATION_TOKEN` in `key:secret` format. For a private TLS authority, set `REQUESTS_CA_BUNDLE` to its CA bundle.
-
-```bash
-remote=(--site "$TARGET_SITE" --url "$UCM_URL" --run "$RUN_ID")
-ucm-push transfer-status "${remote[@]}"
-ucm-push send-publication "${remote[@]}" --publication "$PUBLICATION" --progress
-```
-
-This transfers one sealed file in resumable 512 KiB chunks. On the receiving bench, set `RUN_ID` from the approved handoff and stage the uploaded file:
-
-```bash
-export RUN_ID="$(jq -er '.run' /srv/approved/DEMO01/handoff.json)"
-bench --site "$TARGET_SITE" execute ucm_migration_loader.publication_transport.receive \
-  --kwargs "$(jq -nc --arg run "$RUN_ID" '{run:$run}')"
-```
-
-At **Publication staged**, the receiver has verified the file and recorded the planned batch count. Applied batches should be zero. Desk shows a short ID such as `MIG-0028`. CLI commands use the full digest in `RUN_ID`.
-
-## Operate the run in Desk
-
-1. Search Desk for **UCM Migration Run** and open the staged run. Choose **Migration → Configure write routes**. Select **Validated bulk SQL** for Person and **Document API** for Person Note if that is your chosen plan. Click **Save routes**. All published parent DocTypes support either route. The saved plan locks once apply starts.
-2. Choose **Migration → Apply hidden batches**. **Refresh progress** shows committed and remaining batches. **View batches** opens receipts for this run. Open an individual receipt to see its sequence, published DocType, actual write route and digest.
-3. At **Publication ready**, choose **Download report**. The worker compares counts, stored fields, child order, historical audit fields, attachments and references against the publication. Deferred assignments and shares are counted separately. A failed check blocks activation.
-4. After review, choose **Activate delegation**. Activation rechecks the import, releases eligible assignments and shares, and opens the context. **UCM Migration Held Share** records historical shares whose receiving delegation is inactive. UCM rechecks consent and eligibility when that delegation goes live.
-
-**Write routes on a staged run**
-
-![Desk dialog selecting Validated bulk SQL for Person and Document API for Person Note](docs/screenshots/write-routes.png)
-
-**A reconciled run with two committed batches**
-
-![Migration Run progress and actions including Download report and Activate delegation](docs/screenshots/migration-run.png)
-
-**View batches filtered to one run**
-
-![Two ordered batch receipts linked to migration run MIG-0028](docs/screenshots/batch-receipts.png)
-
-## All CLI commands
-
-These examples reuse the Bash arrays and variables from steps 2 and 3. For operator actions, run in a separate shell with the same target variables and a **System Manager's** token. Commands such as `apply` enqueue work. Poll `status` for the resulting state.
-
-| Command | What it does | Example |
-|---|---|---|
-| `source-inventory` | Count source rows and identify unsupported business rows | `ucm-push source-inventory "${src[@]}"` |
-| `upload-order` | Preview activity dependency order and batch planning | `ucm-push upload-order "${src[@]}" --batch-size 1000` |
-| `prepare` | Write a sealed delegation publication to a new file | `ucm-push prepare "${src[@]}" --private-files "$PRIVATE_FILES" --publication-out "$PUBLICATION" --batch-size 1000 --batch-bytes 4194304` |
-| `check-publication` | Verify the sealed file, site, manifest and digest, and emit the handoff | `ucm-push check-publication --site "$TARGET_SITE" --publication "$PUBLICATION" --run "$RUN_ID"` |
-| `send-publication` | Upload the approved file, resuming from the acknowledged offset | `ucm-push send-publication "${remote[@]}" --publication "$PUBLICATION" --progress` |
-| `transfer-status` | Read expected byte count and acknowledged offset | `ucm-push transfer-status "${remote[@]}"` |
-| `apply` | Start or resume applying committed business batches. Optionally stop after a bounded number of new batches | `ucm-push apply "${remote[@]}" --max-batches 1` |
-| `status` | Show run state, received and applied counts, and the first finding | `ucm-push status "${remote[@]}"` |
-| `pause` | Stop the worker at a batch boundary | `ucm-push pause "${remote[@]}"` |
-| `report` | Read reconciliation, held-share outcomes and activation details | `ucm-push report "${remote[@]}" > report.json` |
-| `locate-item` | On the publishing host, resolve a finding's one-based batch and item to its source record | `ucm-push locate-item --site "$TARGET_SITE" --publication "$PUBLICATION" --run "$RUN_ID" --sequence 2 --item 1` |
-| `activate` | Request activation of a reviewed ready delegation | `ucm-push activate "${remote[@]}"` |
-| `discard` | Cancel a hidden run and remove its imported rows while retaining receipts | `ucm-push discard "${remote[@]}"` |
-
-### Bounded case-file pilot commands
-
-The pilot supports a smaller case-file profile and has its own manifest, approval and verification steps. It also supports `status`, `apply`, `pause`, `report`, `activate` and `discard`. Select the same `--profile`, `--attempt`, snapshot and batch limits for both plan and push. The pilot requires the target context description `Synthetic UCM migration rehearsal`.
-
-| Command | What it does | Example |
-|---|---|---|
-| `assess` | Check whether the source fits the selected pilot profile | `ucm-push assess "${src[@]}"` |
-| `plan` | Generate the pilot manifest for target approval | `ucm-push plan "${src[@]}" --manifest-out manifest.json` |
-| `push` | Send pilot document batches after approval | `ucm-push push "${src[@]}" --url "$UCM_URL" --max-batches 1` |
-| `verify` | Request verification of a staged pilot | `ucm-push verify "${remote[@]}"` |
-| `reconcile` | Compare an independently reviewed pilot projection to the target report | `ucm-push reconcile "${remote[@]}" --expected expected.json` |
-
-For the pilot, use the run digest from `plan` in `remote`. The receiving operator approves the reviewed manifest with `ucm_migration_loader.operator.prepare_publication`. See the [pilot approval example](REHEARSALS.md#push-a-publication) and [expected JSON format](REHEARSALS.md#compare-an-independent-expected-result). The CLI accepts the legacy spellings `activity-order` for `upload-order` and `freeze` for `prepare`. Run `ucm-push --help` for every flag.
-
-## Recovery
-
-| Situation | Operator action |
+| Setting | Effect |
 |---|---|
-| Upload interrupted | Check `transfer-status` and repeat `send-publication` using the same approved file and digest. |
-| Apply interrupted | Check `status` or the run's **Finding**. Each successful business batch and its receipt commit together. Resume with `apply` after correcting the reported issue. |
-| Source data needs correction | Review and discard the hidden run, correct the source, then prepare a new full publication with a new snapshot identity. For the bounded pilot, increment `--attempt`. |
-| Write-route menu missing | Open a full **Publication staged** run before its first apply request. |
-| Ready but some batches remain | Inspect the report's deferred access counts. Eligible assignments and shares are handled during activation. |
+| `ucm_migration_route` | The write route a newly staged run starts with. Without it, the Document API |
+| `ucm_migration_sample_every` | One record in so many goes through UCM's own check during the verification. 50 by default |
+| `ucm_migration_live_p95_ms`, `ucm_migration_max_lock_waits` | The limits beyond which a load pauses for the site's users |
+| `ucm_migration_quality_url` | A link with `{run}` in it: the run's form then offers **Open in data quality dashboard** |
 
-[Developer rehearsals, reference-data checks, test commands and benchmark procedures](REHEARSALS.md)
+## Limits to know before a migration
+
+- **The tables must be the same.** The publishing database and the site must have the same columns in every table a publication carries. A delegation's own fields therefore have to be columns of the site, and of every publishing database, before its file is sealed; and the site's tables and UCM release stay as they are from sealing to activation.
+- **Shares wait for their receiver.** A share to a delegation that is not live yet is held, and released when that delegation is activated. A record that links to another delegation's record along a share is not carried yet.
+- **A publication carries a delegation's own records.** Dictionaries, catalogs, users, teams and security profiles are expected on the site. Files other than a person's picture, comments and versions are not carried.
+- **A delegation is loaded once,** into a context that is locked, hidden and empty.
+- **The Document API route is for small delegations;** the set-based route is the one for a large delegation.
+- **What was rehearsed:** the largest delegation loaded had 1.25 million rows; the largest file sent over HTTPS was 295 MB.
+
+Every case, with the step at which it is found: [Limits and edge cases](docs/limits-and-edge-cases.md).
+
+## Development
+
+Unit tests run with `pytest` from the app folder; integration tests with `bench --site SITE run-tests --app ucm_migration_loader` on a site with UCM and the loader; rehearsals and browser tests by hand on a development site. Synthetic data only. See [Development and tests](docs/development.md), [CONTRIBUTING.md](CONTRIBUTING.md) for the branches and the rules of the code, and [SECURITY.md](SECURITY.md) to report a vulnerability.

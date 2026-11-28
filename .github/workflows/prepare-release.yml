@@ -1,0 +1,63 @@
+# Prepares the next release of a line: run it by hand on the line's hotfix
+# branch, version-16-hotfix for example. It commits __version__ set to the next
+# patch (.github/scripts/release-version.sh --next) on a new branch
+# release/<version>, then gives the link that opens its pull request into the
+# hotfix branch. The release itself stays the two reviewed pull requests of
+# CONTRIBUTING.md.
+#
+# The commit is made through the API, which GitHub signs, since release/*
+# requires signed commits. The pull request is opened by a person: one opened
+# with this workflow's token would not run its required checks.
+name: Prepare release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare the next release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Commit the next version on a release branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOTFIX: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${HOTFIX}" =~ ^(version-[0-9]+(\.[0-9]+)?)-hotfix$ ]]; then
+            echo "::error::Run it on a hotfix branch, such as version-16-hotfix, not ${HOTFIX}"
+            exit 1
+          fi
+          line="${BASH_REMATCH[1]}"
+          version=$(.github/scripts/release-version.sh --next "${line}")
+          branch="release/${version}"
+          sed -i -E "s/^__version__ = \"[^\"]*\"$/__version__ = \"${version}\"/" ucm_migration_loader/__init__.py
+          if git diff --quiet; then
+            echo "::error::ucm_migration_loader/__init__.py already holds ${version}: its release pull request may be open"
+            exit 1
+          fi
+
+          head=$(git rev-parse HEAD)
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/heads/${branch}" -f sha="${head}" > /dev/null
+          jq -n --arg repo "${GITHUB_REPOSITORY}" --arg branch "${branch}" --arg head "${head}" \
+            --arg headline "chore: release ${version}" --arg contents "$(base64 -w0 ucm_migration_loader/__init__.py)" \
+            '{query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
+              variables: {input: {branch: {repositoryNameWithOwner: $repo, branchName: $branch},
+                expectedHeadOid: $head, message: {headline: $headline},
+                fileChanges: {additions: [{path: "ucm_migration_loader/__init__.py", contents: $contents}]}}}}' \
+            | gh api graphql --input - > /dev/null
+
+          link="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${HOTFIX}...${branch}?expand=1&title=chore:+release+${version}"
+          echo "${branch} holds ${version}. Open its pull request into ${HOTFIX}: ${link}"
+          echo "${branch} holds \`${version}\`. [Open its pull request into ${HOTFIX}](${link})." >> "${GITHUB_STEP_SUMMARY}"

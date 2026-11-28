@@ -1,0 +1,95 @@
+name: Linters
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Every action is pinned to a commit and every tool to a release, so a run scans
+# with what was reviewed. Bump them by pull request, the version comment with
+# the SHA.
+env:
+  SEMGREP_VERSION: 1.180.0
+  FRAPPE_SEMGREP_RULES_SHA: 81a6e3d47a328249e8ddf04c586e493dd5553002
+  PIP_AUDIT_VERSION: 2.10.1
+
+jobs:
+  commit-lint:
+    name: 'Semantic Commits'
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 200
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          check-latest: true
+      - name: Check commit titles
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          npm install --no-save @commitlint/cli @commitlint/config-conventional
+          npx commitlint --verbose --from "${BASE_SHA}" --to "${HEAD_SHA}"
+
+  linter:
+    name: 'Frappe Linter'
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+          cache: pip
+      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+        env:
+          # A system binary the runner lacks; betterleaks.yml runs it instead.
+          SKIP: betterleaks
+
+      - name: Download Semgrep rules
+        run: |
+          git init -q frappe-semgrep-rules
+          git -C frappe-semgrep-rules fetch -q --depth 1 https://github.com/frappe/semgrep-rules.git "${FRAPPE_SEMGREP_RULES_SHA}"
+          git -C frappe-semgrep-rules checkout -q FETCH_HEAD
+
+      - name: Run Semgrep rules
+        run: |
+          pip install "semgrep==${SEMGREP_VERSION}"
+          semgrep ci --config ./frappe-semgrep-rules/rules --config r/python.lang.correctness
+
+  deps-vulnerable-check:
+    name: 'Vulnerable Dependency Check'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Cache pip
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/*requirements.txt', '**/pyproject.toml', '**/setup.py') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+            ${{ runner.os }}-
+
+      - name: Install and run pip-audit
+        run: |
+          pip install "pip-audit==${PIP_AUDIT_VERSION}"
+          cd ${GITHUB_WORKSPACE}
+          pip-audit --desc on .

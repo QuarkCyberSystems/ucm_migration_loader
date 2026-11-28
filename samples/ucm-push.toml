@@ -1,0 +1,31 @@
+# Settings of ucm-push on this publishing host: what is the same for every delegation.
+# Passwords and tokens are not written here: this file names the private files that hold them.
+
+# The receiving site, as its bench names it, and its HTTPS address
+site = "ucm.example.org"
+url = "https://ucm.example.org"
+
+# The read-only connection to the publishing database: see source.json
+source_config = "/srv/migration/source.json"
+
+# The private files of the publishing site, for the pictures of the published persons.
+# Leave this line out when the publication has no pictures.
+private_files = "/srv/publication/private/files"
+
+# One folder per snapshot is made here, with the sealed file and its hand-off
+publications = "/srv/migration/publications"
+
+# The API key and secret of your publishing account on the site, as key:secret on one line.
+# The file must be readable by your account only: chmod 600
+token_file = "/srv/migration/ucm-token"
+
+# Optional: the data quality database the run's metrics are written to (see quality-db.json), and its table
+# quality_config = "/srv/migration/quality-db.json"
+# quality_table = "ucm_target_metric"
+
+# Optional: the certificate of a private authority that signed the site's certificate
+# ca_bundle = "/srv/migration/site-ca.pem"
+
+# Optional: records per batch and bytes per batch (the defaults are shown)
+# batch_size = 1000
+# batch_bytes = 4194304

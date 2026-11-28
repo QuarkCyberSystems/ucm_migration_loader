@@ -1,136 +1,270 @@
 {
- "doctype": "DocType",
- "name": "UCM Migration Run",
- "module": "UCM Migration Loader",
+ "actions": [],
  "autoname": "hash",
+ "creation": "2026-11-26 18:23:04.298398",
+ "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "overview",
+  "run_section",
   "display_id",
-  "context_id",
+  "delegation",
   "snapshot_id",
-  "publishing_user",
-  "manifest_json",
   "state",
-  "received",
-  "document_count",
   "finding",
-  "applied",
-  "dispatch_id",
-  "reconciliation_json",
+  "run_column",
+  "write_route",
+  "document_count",
+  "duration",
+  "publishing_user",
   "approved_by",
   "activated_on",
-  "write_plan_json"
+  "progress_section",
+  "received",
+  "applied",
+  "reconcile_cursor",
+  "progress_column",
+  "worker_phase",
+  "worker_seen",
+  "dispatch_id",
+  "details_section",
+  "context_id",
+  "manifest_json",
+  "write_plan_json",
+  "reconciliation_json",
+  "publication_stamp",
+  "reconcile_counts",
+  "timeline_json",
+  "quality_json",
+  "approval_json"
  ],
  "fields": [
   {
    "fieldname": "display_id",
-   "label": "Run ID",
    "fieldtype": "Data",
+   "label": "Run ID",
+   "no_copy": 1,
    "read_only": 1,
-   "unique": 1,
-   "no_copy": 1
+   "unique": 1
   },
   {
    "fieldname": "context_id",
-   "label": "Context Id",
    "fieldtype": "Data",
+   "label": "Context Id",
    "read_only": 1,
-   "search_index": 1,
-   "in_list_view": 1
+   "search_index": 1
   },
   {
    "fieldname": "snapshot_id",
-   "label": "Snapshot Id",
    "fieldtype": "Data",
-   "read_only": 1,
-   "in_list_view": 1
+   "label": "Snapshot",
+   "read_only": 1
   },
   {
    "fieldname": "publishing_user",
-   "label": "Publishing User",
    "fieldtype": "Link",
+   "label": "Publishing User",
    "options": "User",
    "read_only": 1
   },
   {
    "fieldname": "manifest_json",
-   "label": "Manifest Json",
    "fieldtype": "Long Text",
+   "label": "Manifest Json",
    "read_only": 1
   },
   {
    "fieldname": "state",
-   "label": "State",
    "fieldtype": "Select",
-   "read_only": 1,
-   "options": "Receiving\nPublication staged\nPublication applying\nPublication cleaning\nPublication paused\nPublication ready\nStaged\nVerified\nApplying\nPaused\nReady\nCleaning\nRejected\nActivated\nDiscarded",
-   "in_list_view": 1
+   "in_standard_filter": 1,
+   "label": "State",
+   "options": "Proposed\nAwaiting publication\nPublication staged\nPublication applying\nPublication cleaning\nPublication paused\nPublication ready\nRejected\nActivated\nDiscarded",
+   "read_only": 1
   },
   {
    "fieldname": "received",
-   "label": "Received",
    "fieldtype": "Int",
+   "label": "Batches received",
    "read_only": 1
   },
   {
    "fieldname": "document_count",
-   "label": "Document Count",
    "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Records",
    "read_only": 1
   },
   {
    "fieldname": "finding",
-   "label": "Finding",
    "fieldtype": "Small Text",
+   "label": "Finding",
    "read_only": 1
   },
   {
    "fieldname": "applied",
-   "label": "Applied Batches",
    "fieldtype": "Int",
+   "label": "Applied Batches",
    "read_only": 1
   },
   {
    "fieldname": "dispatch_id",
-   "label": "Dispatch ID",
    "fieldtype": "Int",
+   "label": "Dispatch ID",
    "read_only": 1
   },
   {
    "fieldname": "reconciliation_json",
-   "label": "Reconciliation Report",
    "fieldtype": "Long Text",
+   "label": "Reconciliation Report",
    "read_only": 1
   },
   {
    "fieldname": "approved_by",
-   "label": "Activated By",
    "fieldtype": "Link",
-   "read_only": 1,
-   "options": "User"
+   "label": "Activated By",
+   "options": "User",
+   "read_only": 1
   },
   {
    "fieldname": "activated_on",
-   "label": "Activated On",
    "fieldtype": "Datetime",
+   "label": "Activated On",
    "read_only": 1
   },
   {
    "fieldname": "write_plan_json",
-   "label": "Write routes by DocType",
    "fieldtype": "Long Text",
+   "label": "Write routes by DocType",
+   "read_only": 1
+  },
+  {
+   "fieldname": "publication_stamp",
+   "fieldtype": "Small Text",
+   "hidden": 1,
+   "label": "Publication verification identity",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reconcile_cursor",
+   "fieldtype": "Int",
+   "label": "Reconciled business batches",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reconcile_counts",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Reconciliation checkpoint counts",
+   "read_only": 1
+  },
+  {
+   "fieldname": "worker_phase",
+   "fieldtype": "Data",
+   "label": "Last worker phase",
+   "read_only": 1
+  },
+  {
+   "fieldname": "worker_seen",
+   "fieldtype": "Datetime",
+   "label": "Last worker checkpoint",
+   "read_only": 1
+  },
+  {
+   "fieldname": "overview",
+   "fieldtype": "HTML",
+   "label": "Overview"
+  },
+  {
+   "fieldname": "run_section",
+   "fieldtype": "Section Break",
+   "label": "Run"
+  },
+  {
+   "fieldname": "delegation",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Delegation",
+   "read_only": 1
+  },
+  {
+   "fieldname": "run_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "write_route",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Route",
+   "read_only": 1
+  },
+  {
+   "fieldname": "duration",
+   "fieldtype": "Duration",
+   "hide_days": 1,
+   "in_list_view": 1,
+   "label": "Duration",
+   "read_only": 1
+  },
+  {
+   "fieldname": "progress_section",
+   "fieldtype": "Section Break",
+   "label": "Progress"
+  },
+  {
+   "fieldname": "progress_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "details_section",
+   "fieldtype": "Section Break",
+   "label": "Technical details"
+  },
+  {
+   "fieldname": "timeline_json",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Step times",
+   "read_only": 1
+  },
+  {
+   "fieldname": "quality_json",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Data quality hand-over",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approval_json",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Hand-off approval",
    "read_only": 1
   }
  ],
+ "links": [],
+ "modified": "2026-11-27 16:42:26.824403",
+ "modified_by": "Administrator",
+ "module": "UCM Migration Loader",
+ "name": "UCM Migration Run",
+ "owner": "Administrator",
  "permissions": [
   {
-   "role": "System Manager",
-   "read": 1
+   "read": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "role": "Migration Admin"
   }
  ],
- "creation": "2026-11-18 00:00:00",
- "modified": "2026-11-20 23:45:00",
- "title_field": "display_id",
+ "row_format": "Dynamic",
+ "search_fields": "display_id",
  "show_title_field_in_link": 1,
- "search_fields": "display_id"
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "display_id"
 }

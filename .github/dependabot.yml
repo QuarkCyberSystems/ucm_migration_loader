@@ -1,0 +1,31 @@
+# Keeps the pinned actions and the Python dependencies current, by pull request
+# against the default branch. A release is only proposed once it is a week old,
+# so a compromised release has time to be caught before it reaches a pull request.
+# Docs: https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+version: 2
+
+updates:
+  # The actions in .github/workflows, pinned by commit: Dependabot moves the SHA
+  # and its version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ci
+
+  # pyproject.toml. Frappe itself is installed by bench, not declared here.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
