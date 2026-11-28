@@ -9,10 +9,19 @@ from frappe import _
 from .constants import ACTIVATED, ROLE, RUN
 
 
-class Unprepared(ValueError):
+class Refusal(ValueError):
+	"""A refusal whose sentence the run shows to the migration team, where any other failure shows its kind
+	only: the sentence names a DocType or a rule, never a record or a value."""
+
+
+class Unprepared(Refusal):
 	"""The site is not ready for this delegation: something its records refer to is not there, or the site's
-	sensitive-field setup differs from the publication's. Its sentence names a DocType, never a record or a
-	value, so the run shows it to the migration team."""
+	sensitive-field setup differs from the publication's."""
+
+
+class Unpublishable(Refusal):
+	"""The publication holds something the loader does not carry. A current ucm-push refuses such a delegation
+	when it is sealed, and says which records; the site says it for a file sealed otherwise."""
 
 
 def only_admin():

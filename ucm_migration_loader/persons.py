@@ -5,7 +5,14 @@ from hashlib import sha256
 from pathlib import Path
 
 from .batch_metrics import measure
+from .runs import Unpublishable
 from .stored_rows import checked_row, insert_document
+
+# a person's files are its picture and nothing else: the sealing refuses a delegation where they are not
+FILES_DIFFER = (
+	"A published person has a file that is not its one picture: "
+	"seal the delegation again with the current ucm-push"
+)
 
 
 @measure("attachments")
@@ -64,7 +71,7 @@ def prepare_person(row, nested, files):
 
 	url = row["person_picture"]
 	if len(files) != int(bool(url)) or (files and files[0]["file_url"] != url):
-		raise ValueError("Published picture and file inventory differ")
+		raise Unpublishable(FILES_DIFFER)
 	doc = frappe.get_doc(
 		{
 			"doctype": "Person",

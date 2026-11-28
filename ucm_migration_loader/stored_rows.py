@@ -41,7 +41,10 @@ def row_differences(dt, row):
 @measure("validation")
 def checked_row(dt, row):
 	if differences := row_differences(dt, row):
-		raise ValueError(f"Published {dt} fields differ on target: {sorted(differences)}")
+		from .runs import Refusal
+
+		# the names of the fields, never their values: the run shows this to the migration team
+		raise Refusal(f"Published {dt} fields differ on target: {sorted(differences)}")
 
 
 def insert_document(doc, **kwargs):

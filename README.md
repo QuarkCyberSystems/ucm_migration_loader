@@ -194,7 +194,7 @@ ucm-push check-publication --site "$TARGET_SITE" --publication "$PUBLICATION" \
 jq '{run,site,snapshot,batches,counts,file_bytes,file_sha256}' handoff.json
 ```
 
-`prepare` and `seal` refuse a delegation the site could not load, before they write a file: activities that lack a required place, business rows outside the publication profile, and persons whose files are not their picture alone. A publication carries a person's picture, as one private file, and no other attachment. The refusal gives the number of files and persons and the first person's identifier, and `source-inventory` lists the same under `unsupported_person_files`, so that the source is corrected before anything is sent. The site checks the same when it loads a person.
+`prepare` and `seal` refuse a delegation the site could not load, before they write a file: activities that lack a required place, business rows outside the publication profile, and persons whose files are not their picture alone. A publication carries a person's picture, as one private file, and no other attachment. The refusal gives the number of files and persons and the first person's identifier, and `source-inventory` lists the same under `unsupported_person_files`, so that the source is corrected before anything is sent. The site checks the same when it loads a person, and says so on the run.
 
 A batch holds up to 1,000 parent documents and 4 MiB, which is also the default of both ways of sealing. The first limit reached closes the batch. Child rows belong to their parent. The planner orders activities by dependency. A 1,000-person batch can produce one multi-row Person SQL statement when the records fit and have no dependencies requiring an earlier flush. Private picture bytes are sealed with their metadata. Supply `--ucm-version` to `prepare` if the publishing database lacks installed UCM version metadata.
 
@@ -347,6 +347,7 @@ The CLI accepts the legacy spellings `activity-order` for `upload-order` and `fr
 | Situation | Operator action |
 |---|---|
 | Upload interrupted | Check `transfer-status` and repeat `send-publication` using the same approved file and digest. |
+| Paused or not activated, with *Published … fields differ on target* and the fields' names | UCM on this site stores those fields otherwise than the publication holds them: a rule of UCM fills or changes them, or this UCM no longer has them. Check that the site runs the UCM release the publication was made for; the finding names the fields, never their values. |
 | Apply interrupted | Check `status` or the run's **Finding**. Each successful business batch and its receipt commit together. Resume with `apply` after correcting the reported issue. |
 | Source data needs correction | Review and discard the hidden run, correct the source, then prepare a new full publication with a new snapshot identity. |
 | Write-route menu missing | Open a full **Publication staged** run before its first apply request. |

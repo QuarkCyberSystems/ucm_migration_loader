@@ -4,6 +4,7 @@ publishing database. Here the site's own database stands in for it, with synthet
 import frappe
 from ucm.tests.utils import UCMTestCase, make_context, make_person
 
+from ucm_migration_loader import persons, runs
 from ucm_migration_loader.source_inventory import person_files
 
 
@@ -77,3 +78,21 @@ class TestPersonFiles(UCMTestCase):
 		other = make_context(f"LDF{next(self.codes)}")
 		with frappe.db._conn.cursor() as cur:
 			self.assertEqual(person_files(cur, other), {})
+
+
+class TestPublishedPersonFiles(UCMTestCase):
+	"""The site's own check, for a file sealed otherwise: it says what is wrong in a sentence the run shows."""
+
+	def test_a_person_published_with_a_file_beside_its_picture_is_refused_in_a_sentence(self):
+		picture = {"file_url": "/private/files/synthetic-a.jpg"}
+		letter = {"file_url": "/private/files/synthetic-letter.pdf"}
+		for row, files in (
+			({"person_picture": "/private/files/synthetic-a.jpg"}, [picture, letter]),
+			({"person_picture": None}, [letter]),
+			({"person_picture": "/private/files/synthetic-a.jpg"}, []),
+			({"person_picture": "/private/files/synthetic-a.jpg"}, [letter]),
+		):
+			with self.assertRaises(runs.Unpublishable) as refused:
+				persons.prepare_person(row, {}, files)
+			self.assertEqual(str(refused.exception), persons.FILES_DIFFER)
+			self.assertIsInstance(refused.exception, runs.Refusal)

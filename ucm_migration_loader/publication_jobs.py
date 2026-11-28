@@ -208,7 +208,7 @@ def _execute(run, action, ticket, max_batches, stop_at):
 				sequence, position, dt = location
 				where = f"batch {sequence}, item {position} ({dt})"
 			# what the site lacks is said in a sentence without data; any other failure gives its kind only
-			said = str(exc) if isinstance(exc, runs.Unprepared) else type(exc).__name__
+			said = str(exc) if isinstance(exc, runs.Refusal) else type(exc).__name__
 			update = {
 				"finding": f"{action} {where}: {said}",
 				"worker_phase": f"{action} failed",

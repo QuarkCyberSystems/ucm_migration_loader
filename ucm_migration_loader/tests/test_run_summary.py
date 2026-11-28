@@ -8,7 +8,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import get_datetime
 
-from ucm_migration_loader import constants, publication_jobs, runs
+from ucm_migration_loader import constants, persons, publication_jobs, runs
 from ucm_migration_loader.tests.utils import REPORT, hidden_context, make_receipt, make_run
 from ucm_migration_loader.ucm_migration_loader import run_overview
 
@@ -246,8 +246,14 @@ class TestFailedJob(IntegrationTestCase):
 		context = hidden_context("LDS5")
 		run = make_run(state="Publication applying", context=context, dispatch_id=4).name
 		missing = runs.Unprepared("A Field Clearance the delegation refers to is not on this site")
+		extra = runs.Unpublishable(persons.FILES_DIFFER)
 		for failure, shown in (
 			(missing, str(missing)),
+			(
+				extra,
+				"A published person has a file that is not its one picture: seal the delegation again "
+				"with the current ucm-push",
+			),
 			(ValueError("invalid literal: 'a name'"), "ValueError"),
 		):
 			frappe.db.set_value(constants.RUN, run, {"state": "Publication applying", "finding": None})

@@ -50,6 +50,7 @@ from ucm_migration_loader.constants import (
 	STAGED,
 )
 from ucm_migration_loader.frozen import CHILDREN, LOOKUPS, ORDER, selection
+from ucm_migration_loader.persons import FILES_DIFFER
 from ucm_migration_loader.publication_receiver import (
 	check_same_target,
 	check_unchanged_site,
@@ -283,7 +284,7 @@ def _item_rows(db, cache: dict, context: str, doctype: str, item: dict, rows: di
 	if doctype == "Person":
 		url = raw["person_picture"]
 		if len(files) != int(bool(url)) or (files and files[0]["row"]["file_url"] != url):
-			raise ValueError(_("Published picture and file inventory differ"))
+			raise runs.Unpublishable(FILES_DIFFER)
 	elif files:
 		raise ValueError(_("Unexpected attachment for {0}").format(doctype))
 	rows[doctype].append(stored_row(db, cache, doctype, raw))
