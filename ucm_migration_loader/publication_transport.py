@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,6 +24,28 @@ from .publication_receiver import inbox as folder
 STAGED = "staged"
 # in a run's inbox while its file arrives: the bytes of it that are safely on the disk
 OFFSET = "offset"
+# free space asked for beyond the file's own size: its index, and room for the site to keep working
+RESERVE = 64 * 1024 * 1024
+
+
+def megabytes(size: int) -> str:
+	return f"{size / 1e6:,.0f} MB"
+
+
+def check_space(run: str, size: int) -> None:
+	"""Refuse an approval the site's disk cannot hold. The file arrives into the folder of the staged files
+	and is renamed there, so its own size is all it takes."""
+	place = local_publication(run).parent
+	place.mkdir(mode=0o700, parents=True, exist_ok=True)
+	file = arriving(run)
+	needed = int(size) - (file.stat().st_size if file.is_file() else 0) + RESERVE
+	free = shutil.disk_usage(place).free
+	if free < needed:
+		frappe.throw(
+			_(
+				"The site's disk has {0} free, and this file needs {1}. Free space on the site, then approve again."
+			).format(megabytes(free), megabytes(needed))
+		)
 
 
 def approve(run: str, publisher: str, sha256: str, size: int):
@@ -31,6 +54,7 @@ def approve(run: str, publisher: str, sha256: str, size: int):
 		frappe.throw(_("Invalid approved publication fingerprint"))
 	if publisher in ("Guest", "Administrator") or not frappe.db.get_value("User", publisher, "enabled"):
 		frappe.throw(_("Select an enabled publishing account"))
+	check_space(run, size)
 	root = folder(run)
 	root.mkdir(mode=0o700, parents=True, exist_ok=True)
 	approval = {

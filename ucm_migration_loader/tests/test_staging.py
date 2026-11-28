@@ -5,6 +5,7 @@ import base64
 import errno
 import hashlib
 import json
+import shutil
 import tempfile
 import uuid
 from unittest.mock import patch
@@ -23,6 +24,7 @@ from ucm_migration_loader import (
 from ucm_migration_loader.tests.utils import (
 	hidden_context,
 	make_account,
+	new_run_name,
 	remove_files,
 	seal,
 	site_schema,
@@ -383,6 +385,36 @@ class TestArrival(StagingCase):
 		frappe.db.after_commit.run()
 		self.assertFalse(publication_receiver.arriving(self.run).exists())
 		self.assertFalse(publication_transport.folder(self.run).exists())
+
+
+class TestSpace(StagingCase):
+	"""An approval is refused where the site's disk cannot hold the file."""
+
+	def approve(self, free: int, size: int):
+		run = new_run_name()
+		self.addCleanup(remove_files, run)
+		usage = shutil.disk_usage(publication_receiver.local_publication(run).parent)
+		with patch.object(shutil, "disk_usage", return_value=usage._replace(free=free)):
+			return run, publication_transport.approve(run, make_account("sender"), "a" * 64, size)
+
+	def test_a_file_the_disk_cannot_hold_is_not_approved(self):
+		gib = 1024**3
+		with self.assertRaisesRegex(
+			frappe.ValidationError, "has 10,737 MB free, and this file needs 64,492 MB"
+		):
+			self.approve(free=10 * gib, size=60 * gib)
+
+	def test_a_file_the_disk_can_hold_is_approved(self):
+		gib = 1024**3
+		run, approval = self.approve(free=61 * gib, size=60 * gib)
+		self.assertEqual(approval["size"], 60 * gib)
+		self.assertTrue((publication_transport.folder(run) / "approval.json").is_file())
+
+	def test_the_file_needs_no_more_than_its_own_size_and_a_reserve(self):
+		gib = 1024**3
+		with self.assertRaises(frappe.ValidationError):
+			self.approve(free=60 * gib + publication_transport.RESERVE - 1, size=60 * gib)
+		self.approve(free=60 * gib + publication_transport.RESERVE, size=60 * gib)
 
 
 class TestActivatedRun(StagingCase):
